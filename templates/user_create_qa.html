@@ -1,0 +1,81 @@
+{% extends "user_base.html" %}
+{% set page = "create-qa" %}
+{% block content %}
+<h4 class="mb-4">建立 Q&A</h4>
+
+{% if request.query_params.get('success') %}
+<div class="alert alert-success"><i class="bi bi-check-circle"></i> Q&A 新增成功！</div>
+{% endif %}
+{% if request.query_params.get('imported') %}
+<div class="alert alert-success"><i class="bi bi-check-circle"></i> 成功匯入 {{ request.query_params.get('imported') }} 筆 Q&A！</div>
+{% endif %}
+
+<div class="row g-4">
+  <!-- 手動新增 -->
+  <div class="col-md-8">
+    <div class="card">
+      <div class="card-header fw-bold"><i class="bi bi-pencil-square"></i> 手動新增問答</div>
+      <div class="card-body">
+        <form method="post" action="/dashboard/create-qa">
+          <div class="mb-3">
+            <label class="form-label">問題 <span class="text-danger">*</span></label>
+            <textarea name="question" class="form-control" rows="2" required placeholder="輸入用戶可能會問的問題，例：請問幾點營業？"></textarea>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">回答 <span class="text-danger">*</span></label>
+            <textarea name="answer" class="form-control" rows="4" required placeholder="輸入對應的回答內容..."></textarea>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">關鍵字 <small class="text-muted">（選填，逗號分隔）</small></label>
+            <input type="text" name="keywords" class="form-control" placeholder="例：營業時間,幾點開門,上班時間">
+          </div>
+          <div class="mb-4">
+            <label class="form-label">分類 <small class="text-muted">（選填）</small></label>
+            <input type="text" name="category" class="form-control" value="一般" list="category-list">
+            <datalist id="category-list">
+              {% for cat in categories %}<option value="{{ cat }}">{% endfor %}
+            </datalist>
+          </div>
+          <button type="submit" class="btn" style="background:#06C755;color:#fff">
+            <i class="bi bi-plus-circle"></i> 新增 Q&A
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- 批次匯入 -->
+  <div class="col-md-4">
+    <div class="card">
+      <div class="card-header fw-bold"><i class="bi bi-upload"></i> 批次匯入 CSV</div>
+      <div class="card-body">
+        <p class="text-muted small mb-3">
+          CSV 必要欄位：<code>question</code>、<code>answer</code><br>
+          選填欄位：<code>keywords</code>、<code>category</code>
+        </p>
+        <form method="post" action="/dashboard/create-qa/import" enctype="multipart/form-data">
+          <div class="mb-3">
+            <input type="file" name="file" class="form-control" accept=".csv" required>
+          </div>
+          <button type="submit" class="btn btn-outline-primary w-100">
+            <i class="bi bi-file-earmark-arrow-up"></i> 上傳匯入
+          </button>
+        </form>
+        <hr>
+        <a href="/opt/linebot/qa_template.csv" class="btn btn-outline-secondary w-100 btn-sm" download>
+          <i class="bi bi-download"></i> 下載 CSV 範本
+        </a>
+      </div>
+    </div>
+
+    <div class="card mt-3">
+      <div class="card-body text-center">
+        <div class="text-muted small mb-2">前往 Q&A 訓練列表</div>
+        <a href="/dashboard/qa" class="btn btn-outline-secondary w-100">
+          <i class="bi bi-list-ul"></i> 查看所有 Q&A
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

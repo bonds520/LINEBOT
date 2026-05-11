@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>管理後台登入</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light d-flex align-items-center justify-content-center" style="min-height:100vh">
+<div class="card shadow" style="width:360px">
+  <div class="card-body p-4">
+    <h4 class="text-center mb-4" style="color:#06C755"><i class="bi bi-chat-dots-fill"></i> LINE Bot 管理後台</h4>
+    {% if error %}<div class="alert alert-danger">{{ error }}</div>{% endif %}
+    <form method="post">
+      <div class="mb-3">
+        <label class="form-label">管理員密碼</label>
+        <input type="password" name="password" class="form-control" placeholder="請輸入密碼" required autofocus>
+      </div>
+      <button type="submit" class="btn w-100" style="background:#06C755;color:#fff">登入</button>
+    </form>
+  </div>
+</div>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+</body>
+</html>

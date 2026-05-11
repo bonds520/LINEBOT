@@ -1,0 +1,21 @@
+# 環境變數（含機密資訊）
+.env
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# 資料庫
+*.db
+*.sqlite3
+
+# 系統
+.DS_Store
+*.log

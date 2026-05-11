@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% set page = "pending" %}
+{% block content %}
+<h4 class="mb-4">待處理問題</h4>
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead class="table-light">
+        <tr><th>#</th><th>用戶</th><th>問題內容</th><th>時間</th><th>狀態</th><th>操作</th></tr>
+      </thead>
+      <tbody>
+        {% for p in pending %}
+        <tr class="{% if p.status == 'pending' %}table-warning{% endif %}">
+          <td>{{ p.id }}</td>
+          <td><small>{{ p.display_name or p.line_user_id[:8] + '...' }}</small></td>
+          <td>{{ p.question }}</td>
+          <td><small>{{ p.created_at.strftime('%m/%d %H:%M') }}</small></td>
+          <td>
+            {% if p.status == 'pending' %}
+            <span class="badge bg-warning text-dark">待處理</span>
+            {% else %}
+            <span class="badge bg-success">已處理</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if p.status == 'pending' %}
+            <button class="btn btn-sm btn-outline-success" data-bs-toggle="modal" data-bs-target="#handleModal{{ p.id }}">標記處理</button>
+            {% else %}
+            <small class="text-muted">{{ p.note or '' }}</small>
+            {% endif %}
+          </td>
+        </tr>
+
+        <div class="modal fade" id="handleModal{{ p.id }}" tabindex="-1">
+          <div class="modal-dialog">
+            <div class="modal-content">
+              <form method="post" action="/admin/pending/{{ p.id }}/handle">
+                <div class="modal-header"><h5 class="modal-title">標記已處理</h5></div>
+                <div class="modal-body">
+                  <p><strong>問題：</strong>{{ p.question }}</p>
+                  <div class="mb-3"><label class="form-label">備註（選填）</label><textarea name="note" class="form-control" rows="2" placeholder="處理方式或備註..."></textarea></div>
+                </div>
+                <div class="modal-footer">
+                  <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                  <button type="submit" class="btn btn-success">確認已處理</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

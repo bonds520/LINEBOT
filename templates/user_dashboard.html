@@ -1,0 +1,36 @@
+{% extends "user_base.html" %}
+{% set page = "dashboard" %}
+{% block content %}
+<h4 class="mb-4">歡迎，{{ user.display_name }} 👋</h4>
+<div class="row g-3">
+  <div class="col-md-4">
+    <div class="card text-white" style="background:#06C755">
+      <div class="card-body">
+        <div class="fs-2 fw-bold">{{ qa_count }}</div>
+        <div>Q&A 總數</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card text-white bg-info">
+      <div class="card-body">
+        <div class="fs-2 fw-bold">{{ trained_count }}</div>
+        <div>已訓練 Q&A</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card text-white bg-warning">
+      <div class="card-body">
+        <div class="fs-2 fw-bold">{{ pending_count }}</div>
+        <div>待訓練建檔</div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="mt-4 d-flex gap-2 flex-wrap">
+  <a href="/dashboard/create-qa" class="btn" style="background:#06C755;color:#fff"><i class="bi bi-plus-circle"></i> 建立 Q&A</a>
+  <a href="/dashboard/qa" class="btn btn-outline-secondary"><i class="bi bi-list-ul"></i> Q&A 訓練列表</a>
+  <a href="/dashboard/trained" class="btn btn-outline-info"><i class="bi bi-patch-check"></i> 已訓練 Q&A</a>
+</div>
+{% endblock %}

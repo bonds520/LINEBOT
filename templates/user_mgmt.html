@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% set page = "users" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4>使用者管理</h4>
+  <button class="btn btn-sm" style="background:#06C755;color:#fff" data-bs-toggle="modal" data-bs-target="#addUserModal">
+    <i class="bi bi-person-plus"></i> 新增使用者
+  </button>
+</div>
+
+{% if request.query_params.get('error') %}
+<div class="alert alert-danger">{{ request.query_params.get('error') }}</div>
+{% endif %}
+
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead class="table-light">
+        <tr><th>#</th><th>帳號</th><th>顯示名稱</th><th>角色</th><th>狀態</th><th>建立時間</th><th>操作</th></tr>
+      </thead>
+      <tbody>
+        {% for u in users %}
+        <tr>
+          <td>{{ u.id }}</td>
+          <td><strong>{{ u.username }}</strong></td>
+          <td>{{ u.display_name }}</td>
+          <td>
+            {% if u.role == 'admin' %}
+            <span class="badge bg-danger">管理員</span>
+            {% else %}
+            <span class="badge bg-primary">一般使用者</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if u.is_active %}
+            <span class="badge" style="background:#06C755">啟用</span>
+            {% else %}
+            <span class="badge bg-secondary">停用</span>
+            {% endif %}
+          </td>
+          <td><small>{{ u.created_at.strftime('%Y/%m/%d') }}</small></td>
+          <td>
+            <button class="btn btn-sm btn-outline-primary me-1" data-bs-toggle="modal" data-bs-target="#editModal{{ u.id }}">編輯</button>
+            <button class="btn btn-sm btn-outline-warning me-1" data-bs-toggle="modal" data-bs-target="#pwdModal{{ u.id }}">改密碼</button>
+            <form method="post" action="/admin/users/{{ u.id }}/delete" class="d-inline" onsubmit="return confirm('確定刪除帳號 {{ u.username }}？')">
+              <button class="btn btn-sm btn-outline-danger">刪除</button>
+            </form>
+          </td>
+        </tr>
+
+        <!-- 編輯 Modal -->
+        <div class="modal fade" id="editModal{{ u.id }}" tabindex="-1">
+          <div class="modal-dialog">
+            <div class="modal-content">
+              <form method="post" action="/admin/users/{{ u.id }}/update">
+                <div class="modal-header"><h5 class="modal-title">編輯使用者：{{ u.username }}</h5></div>
+                <div class="modal-body">
+                  <div class="mb-3"><label class="form-label">顯示名稱</label><input type="text" name="display_name" class="form-control" value="{{ u.display_name }}" required></div>
+                  <div class="mb-3">
+                    <label class="form-label">角色</label>
+                    <select name="role" class="form-select">
+                      <option value="user" {% if u.role == 'user' %}selected{% endif %}>一般使用者</option>
+                      <option value="admin" {% if u.role == 'admin' %}selected{% endif %}>管理員</option>
+                    </select>
+                  </div>
+                  <div class="form-check"><input type="checkbox" name="is_active" class="form-check-input" id="act{{ u.id }}" value="true" {% if u.is_active %}checked{% endif %}><label class="form-check-label" for="act{{ u.id }}">帳號啟用</label></div>
+                </div>
+                <div class="modal-footer">
+                  <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                  <button type="submit" class="btn btn-primary">儲存</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+
+        <!-- 改密碼 Modal -->
+        <div class="modal fade" id="pwdModal{{ u.id }}" tabindex="-1">
+          <div class="modal-dialog">
+            <div class="modal-content">
+              <form method="post" action="/admin/users/{{ u.id }}/reset-password">
+                <div class="modal-header"><h5 class="modal-title">重設密碼：{{ u.username }}</h5></div>
+                <div class="modal-body">
+                  <div class="mb-3"><label class="form-label">新密碼</label><input type="password" name="new_password" class="form-control" required minlength="6"></div>
+                </div>
+                <div class="modal-footer">
+                  <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                  <button type="submit" class="btn btn-warning">確認重設</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 新增使用者 Modal -->
+<div class="modal fade" id="addUserModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form method="post" action="/admin/users/create">
+        <div class="modal-header"><h5 class="modal-title">新增使用者</h5></div>
+        <div class="modal-body">
+          <div class="mb-3"><label class="form-label">帳號</label><input type="text" name="username" class="form-control" required placeholder="登入用帳號名稱"></div>
+          <div class="mb-3"><label class="form-label">顯示名稱</label><input type="text" name="display_name" class="form-control" required placeholder="姓名或暱稱"></div>
+          <div class="mb-3"><label class="form-label">密碼</label><input type="password" name="password" class="form-control" required minlength="6"></div>
+          <div class="mb-3">
+            <label class="form-label">角色</label>
+            <select name="role" class="form-select">
+              <option value="user">一般使用者</option>
+              <option value="admin">管理員</option>
+            </select>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+          <button type="submit" class="btn" style="background:#06C755;color:#fff">建立帳號</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

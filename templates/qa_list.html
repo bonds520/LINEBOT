@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% set page = "qa" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4>Q&A 管理</h4>
+  <div>
+    <button class="btn btn-sm me-2" style="background:#06C755;color:#fff" data-bs-toggle="modal" data-bs-target="#addModal">
+      <i class="bi bi-plus-lg"></i> 新增 Q&A
+    </button>
+    <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#importModal">
+      <i class="bi bi-upload"></i> 批次匯入 CSV
+    </button>
+  </div>
+</div>
+
+{% if request.query_params.get('imported') %}
+<div class="alert alert-success">成功匯入 {{ request.query_params.get('imported') }} 筆 Q&A</div>
+{% endif %}
+
+<div class="mb-3">
+  {% for cat in categories %}
+  <a href="/admin/qa?category={{ cat }}" class="btn btn-sm {% if current_category == cat %}btn-dark{% else %}btn-outline-secondary{% endif %} me-1">{{ cat }}</a>
+  {% endfor %}
+  {% if current_category %}
+  <a href="/admin/qa" class="btn btn-sm btn-outline-danger">清除篩選</a>
+  {% endif %}
+</div>
+
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>#</th><th>問題</th><th>回答</th><th>關鍵字</th><th>分類</th><th>命中</th><th>狀態</th><th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for qa in qa_list %}
+        <tr>
+          <td>{{ qa.id }}</td>
+          <td style="max-width:200px">{{ qa.question }}</td>
+          <td style="max-width:250px">{{ qa.answer[:60] }}{% if qa.answer|length > 60 %}...{% endif %}</td>
+          <td style="max-width:150px"><small class="text-muted">{{ qa.keywords or '-' }}</small></td>
+          <td><span class="badge bg-secondary">{{ qa.category }}</span></td>
+          <td>{{ qa.hit_count }}</td>
+          <td>
+            {% if qa.is_active %}
+            <span class="badge" style="background:#06C755">啟用</span>
+            {% else %}
+            <span class="badge bg-secondary">停用</span>
+            {% endif %}
+          </td>
+          <td>
+            <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#editModal{{ qa.id }}">編輯</button>
+            <form method="post" action="/admin/qa/{{ qa.id }}/delete" class="d-inline" onsubmit="return confirm('確定刪除？')">
+              <button class="btn btn-sm btn-outline-danger">刪除</button>
+            </form>
+          </td>
+        </tr>
+
+        <!-- 編輯 Modal -->
+        <div class="modal fade" id="editModal{{ qa.id }}" tabindex="-1">
+          <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+              <form method="post" action="/admin/qa/{{ qa.id }}/update">
+                <div class="modal-header"><h5 class="modal-title">編輯 Q&A #{{ qa.id }}</h5></div>
+                <div class="modal-body">
+                  <div class="mb-3"><label class="form-label">問題</label><textarea name="question" class="form-control" rows="2" required>{{ qa.question }}</textarea></div>
+                  <div class="mb-3"><label class="form-label">回答</label><textarea name="answer" class="form-control" rows="4" required>{{ qa.answer }}</textarea></div>
+                  <div class="mb-3"><label class="form-label">關鍵字（逗號分隔）</label><input type="text" name="keywords" class="form-control" value="{{ qa.keywords or '' }}"></div>
+                  <div class="row">
+                    <div class="col"><label class="form-label">分類</label><input type="text" name="category" class="form-control" value="{{ qa.category }}"></div>
+                    <div class="col d-flex align-items-end"><div class="form-check mb-2"><input type="checkbox" name="is_active" class="form-check-input" id="active{{ qa.id }}" value="true" {% if qa.is_active %}checked{% endif %}><label class="form-check-label" for="active{{ qa.id }}">啟用</label></div></div>
+                  </div>
+                </div>
+                <div class="modal-footer">
+                  <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                  <button type="submit" class="btn" style="background:#06C755;color:#fff">儲存</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 新增 Modal -->
+<div class="modal fade" id="addModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="post" action="/admin/qa/create">
+        <div class="modal-header"><h5 class="modal-title">新增 Q&A</h5></div>
+        <div class="modal-body">
+          <div class="mb-3"><label class="form-label">問題</label><textarea name="question" class="form-control" rows="2" required></textarea></div>
+          <div class="mb-3"><label class="form-label">回答</label><textarea name="answer" class="form-control" rows="4" required></textarea></div>
+          <div class="mb-3"><label class="form-label">關鍵字（逗號分隔，可省略）</label><input type="text" name="keywords" class="form-control" placeholder="例：營業時間,幾點開門"></div>
+          <div class="mb-3"><label class="form-label">分類</label><input type="text" name="category" class="form-control" value="一般"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+          <button type="submit" class="btn" style="background:#06C755;color:#fff">新增</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- 匯入 Modal -->
+<div class="modal fade" id="importModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form method="post" action="/admin/qa/import" enctype="multipart/form-data">
+        <div class="modal-header"><h5 class="modal-title">批次匯入 CSV</h5></div>
+        <div class="modal-body">
+          <p class="text-muted small">CSV 格式：欄位名稱第一列，必要欄位 <code>question</code>、<code>answer</code>，選填 <code>keywords</code>、<code>category</code></p>
+          <div class="mb-3"><input type="file" name="file" class="form-control" accept=".csv" required></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+          <button type="submit" class="btn btn-primary">匯入</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

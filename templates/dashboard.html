@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% set page = "dashboard" %}
+{% block content %}
+<h4 class="mb-4">儀表板</h4>
+<div class="row g-3">
+  <div class="col-md-3">
+    <div class="card text-white" style="background:#06C755">
+      <div class="card-body">
+        <div class="fs-2 fw-bold">{{ qa_count }}</div>
+        <div>Q&A 問答組數</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card text-white bg-warning">
+      <div class="card-body">
+        <div class="fs-2 fw-bold">{{ pending_count }}</div>
+        <div>待處理問題</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card text-white bg-info">
+      <div class="card-body">
+        <div class="fs-2 fw-bold">{{ user_count }}</div>
+        <div>用戶總數</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card text-white bg-secondary">
+      <div class="card-body">
+        <div class="fs-2 fw-bold">{{ msg_count }}</div>
+        <div>訊息總數</div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="mt-4">
+  <a href="/admin/qa" class="btn me-2" style="background:#06C755;color:#fff">管理 Q&A</a>
+  <a href="/admin/pending" class="btn btn-warning">查看待處理問題</a>
+</div>
+{% endblock %}
