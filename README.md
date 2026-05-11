@@ -80,7 +80,8 @@ Database: linebot
 ├── .env                     # 環境變數（不納入版控）
 ├── .env.example             # 環境變數範本
 ├── requirements.txt         # Python 套件清單
-├── update_webhook.sh        # Webhook URL 更新腳本
+├── start_tunnel.sh          # Cloudflare Tunnel 啟動 + 自動更新 Webhook
+├── update_webhook.sh        # Webhook URL 手動更新腳本
 └── qa_template.csv          # Q&A 批次匯入範本
 ```
 
@@ -199,38 +200,66 @@ Database: linebot
 
 ## 系統服務
 
+四個服務均設定為**開機自動啟動**：
+
+| 服務 | 說明 |
+|------|------|
+| `linebot` | FastAPI LINE Bot 主程式 |
+| `nginx` | 反向代理（Port 80 → 8000） |
+| `mysql` | 資料庫 |
+| `cloudflared` | Cloudflare Tunnel + 自動更新 Webhook |
+
 ```bash
-# 查看 LINE Bot 服務狀態
-sudo systemctl status linebot.service
+# 查看所有服務狀態
+sudo systemctl status linebot nginx mysql cloudflared
 
-# 重啟 LINE Bot 服務
+# 重啟個別服務
 sudo systemctl restart linebot.service
-
-# 查看 Nginx 狀態
-sudo systemctl status nginx
-
-# 查看 MySQL 狀態
-sudo systemctl status mysql
+sudo systemctl restart cloudflared.service
 
 # 查看服務即時日誌
 journalctl -u linebot.service -f
+journalctl -u cloudflared.service -f
 ```
 
 ---
 
 ## Webhook URL 更新
 
-每次重啟主機或 Cloudflare Tunnel 中斷後，需更新 Webhook URL。
+### 自動更新（預設行為）
 
-### 方法一：管理後台操作（建議）
+`cloudflared` 服務啟動後會自動執行以下流程，**無需手動操作**：
 
+```
+cloudflared 啟動
+    │
+    ▼
+取得新的 Tunnel URL（trycloudflare.com）
+    │
+    ▼
+等待 Tunnel 連線確認完成
+    │
+    ▼
+呼叫 LINE API 更新 Webhook endpoint
+    │
+    ▼
+更新 .env 的 TUNNEL_URL 紀錄
+```
+
+日誌確認（成功時顯示）：
+```bash
+journalctl -u cloudflared.service | grep "\[OK\]"
+# [OK] LINE Webhook 已自動更新: https://xxxx.trycloudflare.com/webhook
+```
+
+### 手動更新（Tunnel 異常時）
+
+**方法一：管理後台**
 1. 登入 `http://192.168.31.89/admin`
 2. 點左側 **Webhook 設定**
-3. 點「重啟 Tunnel 取得新 URL」
-4. 點「更新至 LINE」完成設定
+3. 點「重啟 Tunnel 取得新 URL」→ 「更新至 LINE」
 
-### 方法二：指令執行
-
+**方法二：指令**
 ```bash
 bash /opt/linebot/update_webhook.sh
 ```
@@ -400,14 +429,36 @@ echo "$USER ALL=(ALL) NOPASSWD: /bin/systemctl restart linebot.service" | sudo t
 sudo chmod 440 /etc/sudoers.d/linebot-restart
 ```
 
-### 第五步：更新 Webhook URL
+### 第五步：設定並啟動 Cloudflare Tunnel 服務
 
 ```bash
-# 啟動 Tunnel 並更新 Webhook
-bash /opt/linebot/update_webhook.sh
+# 複製 cloudflared 服務設定
+sudo tee /etc/systemd/system/cloudflared.service > /dev/null <<EOF
+[Unit]
+Description=Cloudflare Tunnel
+After=network-online.target linebot.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$USER
+ExecStart=/opt/linebot/start_tunnel.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable cloudflared
+sudo systemctl start cloudflared
+
+# 確認 Webhook 自動更新結果（約 15 秒後）
+journalctl -u cloudflared.service | grep "\[OK\]\|\[FAIL\]"
 ```
 
-或至管理後台 → **Webhook 設定** → 重啟 Tunnel → 更新至 LINE
+> Tunnel 啟動後會**自動**偵測新 URL 並更新 LINE Webhook，無需手動操作。
 
 ---
 
@@ -447,4 +498,4 @@ TUNNEL_URL=https://xxx.trycloudflare.com
 
 ---
 
-*文件最後更新：2026-05-11*
+*文件最後更新：2026-05-11（新增 Cloudflare Tunnel 自動更新 Webhook 機制）*

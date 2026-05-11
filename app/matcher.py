@@ -8,7 +8,7 @@ MATCH_THRESHOLD = 60
 
 
 def find_best_match(user_input: str, db: Session) -> Optional[Tuple[QAPair, float]]:
-    qa_list = db.query(QAPair).filter(QAPair.is_active == True).all()
+    qa_list = db.query(QAPair).filter(QAPair.is_active == True, QAPair.is_trained == True).all()
     if not qa_list:
         return None
 
