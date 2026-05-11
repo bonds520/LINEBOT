@@ -1,14 +1,16 @@
 import csv
+import glob
+import gzip
 import io
 import os
 import re
 import secrets
 import subprocess
-import threading
 import time
 import httpx
+from pathlib import Path
 from fastapi import APIRouter, Depends, Request, Form, UploadFile, File, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -402,3 +404,83 @@ async def switch_channel(
     subprocess.Popen(["sudo", "systemctl", "restart", "linebot.service"])
 
     return RedirectResponse(url="/admin/settings?switched=1", status_code=302)
+
+
+# ── 資料庫備份 ────────────────────────────────────────────────
+
+BACKUP_DIR = Path("/opt/linebot/backups")
+DB_USER = "linebot"
+DB_PASS = "Wuhu6688!"
+DB_NAME = "linebot"
+
+
+def _list_backups() -> list:
+    files = sorted(BACKUP_DIR.glob("*.sql.gz"), reverse=True)
+    result = []
+    for f in files:
+        size = f.stat().st_size
+        size_str = f"{size/1024:.1f} KB" if size < 1024*1024 else f"{size/1024/1024:.1f} MB"
+        result.append({
+            "name": f.name,
+            "size": size_str,
+            "mtime": time.strftime("%Y-%m-%d %H:%M", time.localtime(f.stat().st_mtime)),
+        })
+    return result
+
+
+@router.get("/backup", response_class=HTMLResponse)
+def backup_page(request: Request, _=Depends(check_auth)):
+    backups = _list_backups()
+    return templates.TemplateResponse(request=request, name="backup.html", context={
+        "backups": backups,
+    })
+
+
+@router.post("/backup/create")
+def backup_create(_=Depends(check_auth)):
+    filename = f"linebot_{time.strftime('%Y%m%d_%H%M%S')}.sql.gz"
+    filepath = BACKUP_DIR / filename
+
+    try:
+        dump = subprocess.run(
+            ["mysqldump", f"-u{DB_USER}", f"-p{DB_PASS}", DB_NAME],
+            capture_output=True,
+        )
+        if dump.returncode != 0:
+            err = dump.stderr.decode()
+            return RedirectResponse(url=f"/admin/backup?error={err[:80]}", status_code=302)
+
+        with gzip.open(filepath, "wb") as f:
+            f.write(dump.stdout)
+
+        return RedirectResponse(url="/admin/backup?success=1", status_code=302)
+
+    except Exception as e:
+        return RedirectResponse(url=f"/admin/backup?error={str(e)[:80]}", status_code=302)
+
+
+@router.get("/backup/download/{filename}")
+def backup_download(filename: str, _=Depends(check_auth)):
+    # 防止路徑穿越攻擊
+    safe_name = Path(filename).name
+    filepath = BACKUP_DIR / safe_name
+
+    if not filepath.exists() or not safe_name.endswith(".sql.gz"):
+        raise HTTPException(status_code=404, detail="備份檔案不存在")
+
+    return StreamingResponse(
+        open(filepath, "rb"),
+        media_type="application/gzip",
+        headers={"Content-Disposition": f"attachment; filename={safe_name}"},
+    )
+
+
+@router.post("/backup/delete/{filename}")
+def backup_delete(filename: str, _=Depends(check_auth)):
+    safe_name = Path(filename).name
+    filepath = BACKUP_DIR / safe_name
+
+    if filepath.exists() and safe_name.endswith(".sql.gz"):
+        filepath.unlink()
+
+    return RedirectResponse(url="/admin/backup", status_code=302)
