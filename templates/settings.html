@@ -6,13 +6,16 @@
 {% if request.query_params.get('success') %}
 <div class="alert alert-success"><i class="bi bi-check-circle"></i> Webhook URL 已成功更新至 LINE！</div>
 {% endif %}
+{% if request.query_params.get('switched') %}
+<div class="alert alert-success"><i class="bi bi-check-circle"></i> LINE Channel 憑證已切換完成，服務正在重啟中...</div>
+{% endif %}
 {% if request.query_params.get('error') %}
 <div class="alert alert-danger"><i class="bi bi-exclamation-triangle"></i> {{ request.query_params.get('error') }}</div>
 {% endif %}
 
 <div class="row g-4">
 
-  <!-- 目前狀態 -->
+  <!-- Tunnel 狀態 -->
   <div class="col-12">
     <div class="card">
       <div class="card-header fw-bold"><i class="bi bi-activity"></i> Tunnel 狀態</div>
@@ -42,8 +45,6 @@
             </button>
           </div>
         </div>
-
-        <!-- 重啟結果 -->
         <div id="restartResult" class="mt-3" style="display:none">
           <div class="alert mb-0" id="restartAlert"></div>
         </div>
@@ -51,14 +52,12 @@
     </div>
   </div>
 
-  <!-- 手動更新 Webhook -->
+  <!-- 更新 Webhook URL -->
   <div class="col-md-8">
     <div class="card">
       <div class="card-header fw-bold"><i class="bi bi-link-45deg"></i> 更新 LINE Webhook URL</div>
       <div class="card-body">
-        <p class="text-muted small mb-3">
-          輸入完整的 Webhook URL（含 <code>/webhook</code>），系統將自動呼叫 LINE API 更新設定。
-        </p>
+        <p class="text-muted small mb-3">輸入完整的 Webhook URL（含 <code>/webhook</code>），系統將自動呼叫 LINE API 更新設定。</p>
         <form method="post" action="/admin/settings/update-webhook">
           <div class="input-group mb-3">
             <span class="input-group-text"><i class="bi bi-globe"></i></span>
@@ -70,10 +69,8 @@
             </button>
           </div>
         </form>
-
         <div class="text-muted small">
-          <i class="bi bi-info-circle"></i>
-          若自動更新失敗，請至
+          <i class="bi bi-info-circle"></i> 若自動更新失敗，請至
           <a href="https://developers.line.biz/console/" target="_blank">LINE Developers Console</a>
           手動貼上 URL 並按 Verify。
         </div>
@@ -95,35 +92,137 @@
         <h6><i class="bi bi-lightbulb"></i> 操作步驟</h6>
         <ol class="small text-muted ps-3">
           <li>點「重啟 Tunnel」取得新 URL</li>
-          <li>新 URL 會自動填入下方欄位</li>
+          <li>新 URL 自動填入下方欄位</li>
           <li>點「更新至 LINE」完成設定</li>
         </ol>
       </div>
     </div>
   </div>
 
+  <!-- LINE Channel 憑證切換 -->
+  <div class="col-12">
+    <div class="card border-warning">
+      <div class="card-header fw-bold bg-warning bg-opacity-10">
+        <i class="bi bi-arrow-left-right"></i> LINE Channel 憑證切換
+        <span class="badge bg-warning text-dark ms-2">正式移轉用</span>
+      </div>
+      <div class="card-body">
+
+        <!-- 目前憑證 -->
+        <div class="row mb-4">
+          <div class="col-md-6">
+            <label class="form-label text-muted small">目前 Channel Secret</label>
+            <div class="input-group">
+              <span class="input-group-text"><i class="bi bi-key"></i></span>
+              <input type="text" class="form-control bg-light" value="{{ line_secret_masked }}" readonly>
+            </div>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label text-muted small">目前 Channel Access Token</label>
+            <div class="input-group">
+              <span class="input-group-text"><i class="bi bi-shield-lock"></i></span>
+              <input type="text" class="form-control bg-light" value="{{ line_token_masked }}" readonly>
+            </div>
+          </div>
+        </div>
+
+        <hr>
+        <p class="text-muted small mb-3">
+          <i class="bi bi-exclamation-triangle text-warning"></i>
+          切換後服務將自動重啟，舊 Channel 的 Webhook 將失效。請確認新 Channel 設定正確後再執行。
+        </p>
+
+        <!-- 輸入新憑證 -->
+        <div class="row g-3 mb-3">
+          <div class="col-md-5">
+            <label class="form-label fw-bold">新 Channel Secret <span class="text-danger">*</span></label>
+            <input type="text" id="newSecret" class="form-control" placeholder="輸入新的 Channel Secret">
+          </div>
+          <div class="col-md-7">
+            <label class="form-label fw-bold">新 Channel Access Token <span class="text-danger">*</span></label>
+            <input type="text" id="newToken" class="form-control" placeholder="輸入新的 Channel Access Token">
+          </div>
+        </div>
+
+        <button class="btn btn-warning" onclick="verifyAndConfirm()">
+          <i class="bi bi-shield-check"></i> 驗證並切換
+        </button>
+      </div>
+    </div>
+  </div>
+
 </div>
 
+<!-- 確認切換 Modal -->
+<div class="modal fade" id="confirmModal" tabindex="-1" data-bs-backdrop="static">
+  <div class="modal-dialog">
+    <div class="modal-content border-warning">
+      <div class="modal-header bg-warning bg-opacity-10">
+        <h5 class="modal-title"><i class="bi bi-exclamation-triangle-fill text-warning"></i> 確認切換 LINE Channel</h5>
+      </div>
+      <div class="modal-body">
+        <!-- 驗證結果 -->
+        <div id="verifyResult" class="mb-3"></div>
+
+        <div class="alert alert-warning">
+          <strong>切換後影響：</strong>
+          <ul class="mb-0 mt-1">
+            <li>服務將自動重啟（約 5-10 秒中斷）</li>
+            <li>舊 Channel 的 Webhook 將停止接收訊息</li>
+            <li>需重新設定新 Channel 的 Webhook URL</li>
+          </ul>
+        </div>
+
+        <p>請輸入 <strong>CONFIRM</strong> 以確認執行切換：</p>
+        <input type="text" id="confirmInput" class="form-control" placeholder="輸入 CONFIRM">
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+        <button class="btn btn-danger" id="executeBtn" onclick="executeSwitch()" disabled>
+          <i class="bi bi-arrow-left-right"></i> 確認切換
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 切換中 Modal -->
+<div class="modal fade" id="switchingModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+  <div class="modal-dialog modal-sm">
+    <div class="modal-content">
+      <div class="modal-body text-center p-4">
+        <div class="spinner-border text-warning mb-3"></div>
+        <p class="mb-0">切換中，請稍候...</p>
+        <small class="text-muted">服務重啟需要約 10 秒</small>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 隱藏的切換表單 -->
+<form id="switchForm" method="post" action="/admin/settings/switch-channel" style="display:none">
+  <input type="hidden" name="channel_secret" id="formSecret">
+  <input type="hidden" name="channel_token" id="formToken">
+  <input type="hidden" name="confirm" value="CONFIRM">
+</form>
+
 <script>
+// 重啟 Tunnel
 async function restartTunnel() {
   const btn = document.getElementById('restartBtn');
   const resultDiv = document.getElementById('restartResult');
   const alertDiv = document.getElementById('restartAlert');
-
   btn.disabled = true;
-  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 重啟中，請稍候...';
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 重啟中...';
   resultDiv.style.display = 'none';
-
   try {
     const resp = await fetch('/admin/settings/restart-tunnel', { method: 'POST' });
     const data = await resp.json();
-
     resultDiv.style.display = 'block';
     if (data.success) {
       alertDiv.className = 'alert alert-success mb-0';
-      alertDiv.innerHTML = `<i class="bi bi-check-circle"></i> 新 Tunnel URL 取得成功！<br>
-        <code>${data.webhook}</code><br>
-        <small class="text-muted">已自動填入下方欄位，請點「更新至 LINE」完成設定</small>`;
+      alertDiv.innerHTML = `<i class="bi bi-check-circle"></i> 新 URL：<code>${data.webhook}</code><br>
+        <small>已填入下方欄位，請點「更新至 LINE」完成設定</small>`;
       document.getElementById('webhookInput').value = data.webhook;
       document.getElementById('currentWebhook').textContent = data.webhook;
     } else {
@@ -135,9 +234,67 @@ async function restartTunnel() {
     alertDiv.className = 'alert alert-danger mb-0';
     alertDiv.innerHTML = '<i class="bi bi-exclamation-triangle"></i> 請求逾時，請重試';
   }
-
   btn.disabled = false;
   btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> 重啟 Tunnel 取得新 URL';
+}
+
+// 驗證新憑證並開啟確認 Modal
+async function verifyAndConfirm() {
+  const secret = document.getElementById('newSecret').value.trim();
+  const token = document.getElementById('newToken').value.trim();
+  if (!secret || !token) {
+    alert('請填入新的 Channel Secret 和 Access Token');
+    return;
+  }
+
+  const verifyDiv = document.getElementById('verifyResult');
+  verifyDiv.innerHTML = '<div class="text-center"><span class="spinner-border spinner-border-sm"></span> 驗證中...</div>';
+
+  const modal = new bootstrap.Modal(document.getElementById('confirmModal'));
+  modal.show();
+
+  try {
+    const fd = new FormData();
+    fd.append('channel_secret', secret);
+    fd.append('channel_token', token);
+    const resp = await fetch('/admin/settings/verify-switch', { method: 'POST', body: fd });
+    const data = await resp.json();
+
+    if (data.valid) {
+      verifyDiv.innerHTML = `
+        <div class="alert alert-success py-2">
+          <i class="bi bi-check-circle"></i> 驗證成功！偵測到以下 Bot：<br>
+          ${data.picture ? `<img src="${data.picture}" class="rounded-circle me-2" width="32" height="32">` : ''}
+          <strong>${data.bot_name}</strong>
+        </div>`;
+    } else {
+      verifyDiv.innerHTML = `<div class="alert alert-danger py-2">
+        <i class="bi bi-x-circle"></i> 驗證失敗：${data.error}
+      </div>`;
+    }
+  } catch (e) {
+    verifyDiv.innerHTML = `<div class="alert alert-warning py-2">⚠️ 無法驗證，請確認後再切換</div>`;
+  }
+}
+
+// 監聽確認輸入框
+document.getElementById('confirmInput').addEventListener('input', function() {
+  document.getElementById('executeBtn').disabled = (this.value !== 'CONFIRM');
+});
+
+// 執行切換
+function executeSwitch() {
+  const secret = document.getElementById('newSecret').value.trim();
+  const token = document.getElementById('newToken').value.trim();
+  document.getElementById('formSecret').value = secret;
+  document.getElementById('formToken').value = token;
+
+  bootstrap.Modal.getInstance(document.getElementById('confirmModal')).hide();
+  new bootstrap.Modal(document.getElementById('switchingModal')).show();
+
+  setTimeout(() => {
+    document.getElementById('switchForm').submit();
+  }, 500);
 }
 </script>
 {% endblock %}

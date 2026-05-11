@@ -297,16 +297,24 @@ def _start_tunnel_bg():
     )
 
 
+def _mask(value: str, show: int = 6) -> str:
+    if not value:
+        return "（未設定）"
+    return value[:show] + "..." + value[-4:] if len(value) > show + 4 else "***"
+
+
 @router.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request, _=Depends(check_auth)):
     status = _tunnel_status()
     current_webhook = _read_env("TUNNEL_URL")
-    line_token = _read_env("LINE_CHANNEL_ACCESS_TOKEN")
+    token = _read_env("LINE_CHANNEL_ACCESS_TOKEN")
+    secret = _read_env("LINE_CHANNEL_SECRET")
     return templates.TemplateResponse(request=request, name="settings.html", context={
         "tunnel_running": status["running"],
         "tunnel_url": status["url"],
         "current_webhook": f"{current_webhook}/webhook" if current_webhook else "",
-        "line_token_set": bool(line_token),
+        "line_token_masked": _mask(token),
+        "line_secret_masked": _mask(secret),
     })
 
 
@@ -341,10 +349,56 @@ async def update_webhook(webhook_url: str = Form(...), _=Depends(check_auth)):
 
     result = _update_line_webhook(webhook_url, token)
 
-    # 儲存 base URL（去掉 /webhook）
-    base_url = webhook_url.rstrip("/webhook").rstrip("/")
+    base_url = webhook_url.replace("/webhook", "").rstrip("/")
     if result["success"]:
         _write_env("TUNNEL_URL", base_url)
         return RedirectResponse(url="/admin/settings?success=1", status_code=302)
     else:
         return RedirectResponse(url=f"/admin/settings?error=LINE API 回應 {result.get('code','')}", status_code=302)
+
+
+@router.post("/settings/verify-switch")
+async def verify_switch(
+    channel_secret: str = Form(...),
+    channel_token: str = Form(...),
+    _=Depends(check_auth),
+):
+    """驗證新憑證是否有效，回傳 JSON 供前端確認用"""
+    try:
+        resp = httpx.get(
+            "https://api.line.me/v2/bot/info",
+            headers={"Authorization": f"Bearer {channel_token}"},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            info = resp.json()
+            return JSONResponse({
+                "valid": True,
+                "bot_name": info.get("displayName", ""),
+                "bot_id": info.get("userId", ""),
+                "picture": info.get("pictureUrl", ""),
+            })
+        else:
+            return JSONResponse({"valid": False, "error": f"Token 驗證失敗（{resp.status_code}）"})
+    except Exception as e:
+        return JSONResponse({"valid": False, "error": str(e)})
+
+
+@router.post("/settings/switch-channel")
+async def switch_channel(
+    channel_secret: str = Form(...),
+    channel_token: str = Form(...),
+    confirm: str = Form(...),
+    _=Depends(check_auth),
+):
+    """確認後正式切換 LINE Channel 憑證"""
+    if confirm != "CONFIRM":
+        return RedirectResponse(url="/admin/settings?error=確認碼錯誤，切換取消", status_code=302)
+
+    _write_env("LINE_CHANNEL_SECRET", channel_secret)
+    _write_env("LINE_CHANNEL_ACCESS_TOKEN", channel_token)
+
+    # 重啟服務讓新憑證生效
+    subprocess.Popen(["sudo", "systemctl", "restart", "linebot.service"])
+
+    return RedirectResponse(url="/admin/settings?switched=1", status_code=302)
