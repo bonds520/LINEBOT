@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% set page = "settings" %}
+{% block content %}
+<h4 class="mb-4">Webhook 設定</h4>
+
+{% if request.query_params.get('success') %}
+<div class="alert alert-success"><i class="bi bi-check-circle"></i> Webhook URL 已成功更新至 LINE！</div>
+{% endif %}
+{% if request.query_params.get('error') %}
+<div class="alert alert-danger"><i class="bi bi-exclamation-triangle"></i> {{ request.query_params.get('error') }}</div>
+{% endif %}
+
+<div class="row g-4">
+
+  <!-- 目前狀態 -->
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header fw-bold"><i class="bi bi-activity"></i> Tunnel 狀態</div>
+      <div class="card-body">
+        <div class="row align-items-center">
+          <div class="col-md-6">
+            <div class="mb-2">
+              <span class="me-2">Cloudflare Tunnel：</span>
+              {% if tunnel_running %}
+              <span class="badge bg-success fs-6"><i class="bi bi-circle-fill"></i> 執行中</span>
+              {% else %}
+              <span class="badge bg-danger fs-6"><i class="bi bi-circle-fill"></i> 已停止</span>
+              {% endif %}
+            </div>
+            <div class="text-muted small">
+              目前 Webhook URL：<br>
+              {% if current_webhook %}
+              <code id="currentWebhook">{{ current_webhook }}</code>
+              {% else %}
+              <span class="text-warning">尚未設定</span>
+              {% endif %}
+            </div>
+          </div>
+          <div class="col-md-6 text-md-end mt-3 mt-md-0">
+            <button class="btn btn-outline-warning" id="restartBtn" onclick="restartTunnel()">
+              <i class="bi bi-arrow-clockwise"></i> 重啟 Tunnel 取得新 URL
+            </button>
+          </div>
+        </div>
+
+        <!-- 重啟結果 -->
+        <div id="restartResult" class="mt-3" style="display:none">
+          <div class="alert mb-0" id="restartAlert"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 手動更新 Webhook -->
+  <div class="col-md-8">
+    <div class="card">
+      <div class="card-header fw-bold"><i class="bi bi-link-45deg"></i> 更新 LINE Webhook URL</div>
+      <div class="card-body">
+        <p class="text-muted small mb-3">
+          輸入完整的 Webhook URL（含 <code>/webhook</code>），系統將自動呼叫 LINE API 更新設定。
+        </p>
+        <form method="post" action="/admin/settings/update-webhook">
+          <div class="input-group mb-3">
+            <span class="input-group-text"><i class="bi bi-globe"></i></span>
+            <input type="url" name="webhook_url" id="webhookInput" class="form-control"
+              placeholder="https://xxx.trycloudflare.com/webhook"
+              value="{{ current_webhook }}" required>
+            <button type="submit" class="btn" style="background:#06C755;color:#fff">
+              <i class="bi bi-send"></i> 更新至 LINE
+            </button>
+          </div>
+        </form>
+
+        <div class="text-muted small">
+          <i class="bi bi-info-circle"></i>
+          若自動更新失敗，請至
+          <a href="https://developers.line.biz/console/" target="_blank">LINE Developers Console</a>
+          手動貼上 URL 並按 Verify。
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 操作說明 -->
+  <div class="col-md-4">
+    <div class="card border-0 bg-light">
+      <div class="card-body">
+        <h6><i class="bi bi-question-circle"></i> 何時需要更新？</h6>
+        <ul class="small text-muted ps-3">
+          <li>重新開機後</li>
+          <li>Tunnel 中斷重連後</li>
+          <li>LINE Bot 停止回覆時</li>
+        </ul>
+        <hr>
+        <h6><i class="bi bi-lightbulb"></i> 操作步驟</h6>
+        <ol class="small text-muted ps-3">
+          <li>點「重啟 Tunnel」取得新 URL</li>
+          <li>新 URL 會自動填入下方欄位</li>
+          <li>點「更新至 LINE」完成設定</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+async function restartTunnel() {
+  const btn = document.getElementById('restartBtn');
+  const resultDiv = document.getElementById('restartResult');
+  const alertDiv = document.getElementById('restartAlert');
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 重啟中，請稍候...';
+  resultDiv.style.display = 'none';
+
+  try {
+    const resp = await fetch('/admin/settings/restart-tunnel', { method: 'POST' });
+    const data = await resp.json();
+
+    resultDiv.style.display = 'block';
+    if (data.success) {
+      alertDiv.className = 'alert alert-success mb-0';
+      alertDiv.innerHTML = `<i class="bi bi-check-circle"></i> 新 Tunnel URL 取得成功！<br>
+        <code>${data.webhook}</code><br>
+        <small class="text-muted">已自動填入下方欄位，請點「更新至 LINE」完成設定</small>`;
+      document.getElementById('webhookInput').value = data.webhook;
+      document.getElementById('currentWebhook').textContent = data.webhook;
+    } else {
+      alertDiv.className = 'alert alert-danger mb-0';
+      alertDiv.innerHTML = `<i class="bi bi-exclamation-triangle"></i> ${data.error}`;
+    }
+  } catch (e) {
+    resultDiv.style.display = 'block';
+    alertDiv.className = 'alert alert-danger mb-0';
+    alertDiv.innerHTML = '<i class="bi bi-exclamation-triangle"></i> 請求逾時，請重試';
+  }
+
+  btn.disabled = false;
+  btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> 重啟 Tunnel 取得新 URL';
+}
+</script>
+{% endblock %}
