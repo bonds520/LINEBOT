@@ -484,3 +484,54 @@ def backup_delete(filename: str, _=Depends(check_auth)):
         filepath.unlink()
 
     return RedirectResponse(url="/admin/backup", status_code=302)
+
+
+# ── Q&A 匯出 ──────────────────────────────────────────────────
+QA_FIELDS = ["question", "answer", "keywords", "category", "is_active", "is_trained"]
+QA_HEADERS = ["問題", "回答", "關鍵字", "分類", "啟用(1/0)", "已訓練(1/0)"]
+
+
+@router.get("/backup/qa-export")
+def qa_export(fmt: str = "csv", db: Session = Depends(get_db), _=Depends(check_auth)):
+    qa_list = db.query(QAPair).order_by(QAPair.id.asc()).all()
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+
+    if fmt == "xlsx":
+        import openpyxl
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Q&A"
+        ws.append(QA_HEADERS)
+        for qa in qa_list:
+            ws.append([
+                qa.question, qa.answer,
+                qa.keywords or "", qa.category or "",
+                1 if qa.is_active else 0,
+                1 if qa.is_trained else 0,
+            ])
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename=qa_export_{timestamp}.xlsx"},
+        )
+
+    # CSV（預設）
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(QA_FIELDS)          # 標題列使用英文欄位名（供匯入用）
+    for qa in qa_list:
+        writer.writerow([
+            qa.question, qa.answer,
+            qa.keywords or "", qa.category or "",
+            1 if qa.is_active else 0,
+            1 if qa.is_trained else 0,
+        ])
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue().encode("utf-8-sig")]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=qa_export_{timestamp}.csv"},
+    )

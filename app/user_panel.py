@@ -120,6 +120,16 @@ def qa_train(qa_id: int, db: Session = Depends(get_db), user: SystemUser = Depen
     return RedirectResponse(url="/dashboard/qa", status_code=302)
 
 
+@router.post("/dashboard/qa/{qa_id}/delete")
+def qa_delete(qa_id: int, from_page: str = "qa", db: Session = Depends(get_db), user: SystemUser = Depends(current_user_dep)):
+    qa = db.query(QAPair).filter(QAPair.id == qa_id).first()
+    if qa:
+        db.delete(qa)
+        db.commit()
+    redirect = "/dashboard/trained?deleted=1" if from_page == "trained" else "/dashboard/qa?deleted=1"
+    return RedirectResponse(url=redirect, status_code=302)
+
+
 # ── 建立 Q&A（手動新增訓練資料）────────────────────────────────
 @router.get("/dashboard/create-qa", response_class=HTMLResponse)
 def create_qa_page(request: Request, db: Session = Depends(get_db), user: SystemUser = Depends(current_user_dep)):
@@ -154,16 +164,34 @@ async def create_qa_import(file: UploadFile = File(...), db: Session = Depends(g
     count = 0
     for row in reader:
         if "question" in row and "answer" in row:
+            is_active_val = row.get("is_active", "1").strip()
+            is_trained_val = row.get("is_trained", "0").strip()
             qa = QAPair(
                 question=row["question"].strip(),
                 answer=row["answer"].strip(),
                 keywords=row.get("keywords", "").strip(),
                 category=row.get("category", "一般").strip(),
+                is_active=is_active_val not in ("0", "false", "False", ""),
+                is_trained=is_trained_val in ("1", "true", "True"),
             )
             db.add(qa)
             count += 1
     db.commit()
     return RedirectResponse(url=f"/dashboard/create-qa?imported={count}", status_code=302)
+
+
+@router.get("/dashboard/qa-csv-template")
+def qa_csv_template(user: SystemUser = Depends(current_user_dep)):
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["question", "answer", "keywords", "category", "is_active", "is_trained"])
+    writer.writerow(["範例問題", "範例回答", "關鍵字1,關鍵字2", "一般", "1", "0"])
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue().encode("utf-8-sig")]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=qa_template.csv"},
+    )
 
 
 # ── 待回覆清單 ───────────────────────────────────────────────

@@ -222,7 +222,7 @@ Database: linebot
 | 待處理問題 | `/admin/pending` | 查看並標記處理 |
 | 使用者管理 | `/admin/users` | 建立帳號、重設密碼、停用帳號 |
 | Webhook 設定 | `/admin/settings` | Tunnel 管理、Webhook 更新、Channel 憑證切換 |
-| 資料庫備份 | `/admin/backup` | 一鍵備份、下載、刪除備份檔 |
+| 資料庫備份 | `/admin/backup` | 一鍵備份、下載、刪除備份檔、Q&A 匯出（CSV / Excel） |
 
 ### 小編後台（`/dashboard`）
 
@@ -232,9 +232,9 @@ Database: linebot
 | 待回覆清單 | `/dashboard/pending` | 查看待人工回覆訊息、透過 LINE 直接回覆或建立待辦事項 |
 | 待辦事項 | `/dashboard/todo` | 管理待辦清單，含逾期/緊急/即將到期三層警示 |
 | 聊天記錄 | `/dashboard/history` | 查看與用戶的完整對話（Bot回覆/小編回覆以不同顏色區分） |
-| Q&A 訓練 | `/dashboard/qa` | 編輯 Q&A、點擊「訓練建檔」完成訓練 |
-| 已訓練 Q&A | `/dashboard/trained` | 查看已建檔內容、匯出 CSV / XLS |
-| 建立 Q&A | `/dashboard/create-qa` | 手動新增或批次 CSV 匯入 |
+| Q&A 訓練 | `/dashboard/qa` | 編輯/刪除 Q&A、點擊「訓練建檔」完成訓練 |
+| 已訓練 Q&A | `/dashboard/trained` | 查看/刪除已建檔內容、匯出 CSV / XLS |
+| 建立 Q&A | `/dashboard/create-qa` | 手動新增或批次 CSV 匯入（含 is_active/is_trained 欄位）、下載 CSV 範本 |
 
 ### Q&A 分類
 
@@ -571,4 +571,4 @@ TUNNEL_URL=https://xxx.trycloudflare.com
 
 ---
 
-*文件最後更新：2026-05-12（新增待辦事項、聊天記錄、Q&A 分類預設值、關鍵字多分隔符支援、待辦警示機制）*
+*文件最後更新：2026-05-12（新增 Q&A 刪除功能、Q&A 匯出/匯入含 is_active/is_trained 欄位、CSV 範本下載路由修正、管理後台 Q&A 匯出 CSV/Excel）*

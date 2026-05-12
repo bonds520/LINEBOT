@@ -58,6 +58,35 @@
   </div>
 </div>
 
+<!-- Q&A 匯出 -->
+<div class="card mb-4">
+  <div class="card-header fw-bold">
+    <i class="bi bi-file-earmark-spreadsheet text-success"></i> Q&A 資料匯出
+  </div>
+  <div class="card-body">
+    <p class="small text-muted mb-2">匯出所有 Q&A 問答資料，可用於備份或匯入新系統。CSV 格式欄位與批次匯入相容。</p>
+    <div class="row g-2 mb-3">
+      <div class="col-12">
+        <div class="p-2 bg-light rounded small text-muted">
+          <strong>匯出欄位：</strong>
+          <code>question</code>、<code>answer</code>、<code>keywords</code>、<code>category</code>、<code>is_active</code>（1/0）、<code>is_trained</code>（1/0）
+        </div>
+      </div>
+    </div>
+    <div class="d-flex gap-2">
+      <a href="/admin/backup/qa-export?fmt=csv" class="btn btn-outline-success">
+        <i class="bi bi-filetype-csv"></i> 匯出 CSV
+      </a>
+      <a href="/admin/backup/qa-export?fmt=xlsx" class="btn btn-outline-primary">
+        <i class="bi bi-file-earmark-excel"></i> 匯出 Excel
+      </a>
+    </div>
+    <div class="mt-2 small text-muted">
+      <i class="bi bi-info-circle"></i> CSV 檔案可直接作為「Q&A 批次匯入」的格式使用。
+    </div>
+  </div>
+</div>
+
 <!-- 備份清單 -->
 <div class="card">
   <div class="card-header fw-bold">

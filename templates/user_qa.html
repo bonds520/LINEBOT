@@ -11,6 +11,12 @@
 {% if request.query_params.get('imported') %}
 <div class="alert alert-success">成功匯入 {{ request.query_params.get('imported') }} 筆 Q&A</div>
 {% endif %}
+{% if request.query_params.get('deleted') %}
+<div class="alert alert-success alert-dismissible fade show">
+  <i class="bi bi-check-circle"></i> Q&A 已刪除。
+  <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+{% endif %}
 
 <div class="mb-3">
   <a href="/dashboard/qa" class="btn btn-sm {% if not current_category %}btn-dark{% else %}btn-outline-secondary{% endif %} me-1">全部</a>
@@ -45,13 +51,39 @@
             <button class="btn btn-sm btn-outline-primary me-1" data-bs-toggle="modal" data-bs-target="#editModal{{ qa.id }}">編輯</button>
             {% if not qa.is_trained %}
             <form method="post" action="/dashboard/qa/{{ qa.id }}/train" class="d-inline">
-              <button class="btn btn-sm btn-outline-success" title="標記為已訓練完成">
+              <button class="btn btn-sm btn-outline-success me-1" title="標記為已訓練完成">
                 <i class="bi bi-patch-check"></i> 訓練建檔
               </button>
             </form>
             {% endif %}
+            <button class="btn btn-sm btn-outline-danger" data-bs-toggle="modal" data-bs-target="#delQaModal{{ qa.id }}">
+              <i class="bi bi-trash"></i>
+            </button>
           </td>
         </tr>
+
+        <!-- 刪除確認 Modal -->
+        <div class="modal fade" id="delQaModal{{ qa.id }}" tabindex="-1">
+          <div class="modal-dialog modal-sm">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h6 class="modal-title text-danger"><i class="bi bi-exclamation-triangle"></i> 確認刪除？</h6>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+              </div>
+              <div class="modal-body small text-muted">
+                <strong>{{ qa.question[:50] }}</strong>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">取消</button>
+                <form method="post" action="/dashboard/qa/{{ qa.id }}/delete?from_page=qa" class="d-inline">
+                  <button type="submit" class="btn btn-sm btn-danger">
+                    <i class="bi bi-trash"></i> 確認刪除
+                  </button>
+                </form>
+              </div>
+            </div>
+          </div>
+        </div>
 
         <!-- 編輯 Modal -->
         <div class="modal fade" id="editModal{{ qa.id }}" tabindex="-1">

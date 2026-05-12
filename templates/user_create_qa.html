@@ -59,7 +59,7 @@
       <div class="card-body">
         <p class="text-muted small mb-3">
           CSV 必要欄位：<code>question</code>、<code>answer</code><br>
-          選填欄位：<code>keywords</code>、<code>category</code>
+          選填欄位：<code>keywords</code>、<code>category</code>、<code>is_active</code>、<code>is_trained</code>
         </p>
         <form method="post" action="/dashboard/create-qa/import" enctype="multipart/form-data">
           <div class="mb-3">
@@ -70,7 +70,7 @@
           </button>
         </form>
         <hr>
-        <a href="/opt/linebot/qa_template.csv" class="btn btn-outline-secondary w-100 btn-sm" download>
+        <a href="/dashboard/qa-csv-template" class="btn btn-outline-secondary w-100 btn-sm">
           <i class="bi bi-download"></i> 下載 CSV 範本
         </a>
       </div>
