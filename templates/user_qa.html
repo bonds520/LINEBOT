@@ -65,8 +65,25 @@
                   {% endif %}
                   <div class="mb-3"><label class="form-label">問題</label><textarea name="question" class="form-control" rows="2" required>{{ qa.question }}</textarea></div>
                   <div class="mb-3"><label class="form-label">回答</label><textarea name="answer" class="form-control" rows="4" required>{{ qa.answer }}</textarea></div>
+                  {% set preset_cats = ['塔牌位啟用','法會報名','行政手續','款項確認'] %}
                   <div class="mb-3"><label class="form-label">關鍵字（逗號分隔）</label><input type="text" name="keywords" class="form-control" value="{{ qa.keywords or '' }}"></div>
-                  <div class="mb-3"><label class="form-label">分類</label><input type="text" name="category" class="form-control" value="{{ qa.category }}"></div>
+                  <div class="mb-3">
+                    <label class="form-label">分類</label>
+                    <select class="form-select" onchange="catChange(this,'{{ qa.id }}')">
+                      {% for cat in preset_cats %}
+                      <option value="{{ cat }}" {% if qa.category == cat %}selected{% endif %}>{{ cat }}</option>
+                      {% endfor %}
+                      <option value="__other__" {% if qa.category not in preset_cats %}selected{% endif %}>其他</option>
+                    </select>
+                    <input type="hidden" name="category" id="cat_{{ qa.id }}"
+                           value="{{ qa.category }}">
+                    <div id="catother_{{ qa.id }}" class="mt-2 {% if qa.category in preset_cats %}d-none{% endif %}">
+                      <input type="text" class="form-control form-control-sm"
+                             placeholder="請輸入自訂分類名稱"
+                             value="{{ qa.category if qa.category not in preset_cats else '' }}"
+                             oninput="document.getElementById('cat_{{ qa.id }}').value=this.value">
+                    </div>
+                  </div>
                 </div>
                 <div class="modal-footer">
                   <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>

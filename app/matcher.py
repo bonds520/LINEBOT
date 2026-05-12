@@ -18,7 +18,9 @@ def find_best_match(user_input: str, db: Session) -> Optional[Tuple[QAPair, floa
     for qa in qa_list:
         candidates = [qa.question]
         if qa.keywords:
-            candidates.extend([k.strip() for k in qa.keywords.split(",") if k.strip()])
+            import re
+            normalized = re.sub(r'[、，；;]', ',', qa.keywords)
+            candidates.extend([k.strip() for k in normalized.split(",") if k.strip()])
 
         for candidate in candidates:
             score = fuzz.partial_ratio(user_input, candidate)

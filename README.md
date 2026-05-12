@@ -76,7 +76,10 @@ Database: linebot
 │   ├── user_qa.html         # Q&A 訓練列表
 │   ├── user_create_qa.html  # 建立 Q&A
 │   ├── user_trained.html    # 已訓練 Q&A（可匯出）
-│   └── user_pending.html    # 待回覆清單（人工回覆）
+│   ├── user_pending.html    # 待回覆清單（人工回覆）
+│   ├── user_history.html    # 聊天記錄（氣泡版面）
+│   ├── user_todo.html       # 待辦事項清單
+│   └── user_todo_create.html # 新增待辦事項
 ├── backups/                 # 資料庫備份存放目錄
 ├── .env                     # 環境變數（不納入版控）
 ├── .env.example             # 環境變數範本
@@ -137,6 +140,24 @@ Database: linebot
 | status | ENUM | pending / handled |
 | note | TEXT | 處理備註 |
 
+### `todo_items` — 待辦事項
+
+| 欄位 | 類型 | 說明 |
+|------|------|------|
+| id | INT | 主鍵 |
+| family_name | VARCHAR(255) | 家屬姓名 |
+| recipient_name | VARCHAR(255) | 使用者（服務接受者） |
+| tower_number | VARCHAR(64) | 塔/牌位編號 |
+| line_user_id | VARCHAR(64) | 關聯 LINE 用戶 |
+| created_by | VARCHAR(128) | 建立者（小編帳號） |
+| task_content | TEXT | 待辦項目內容 |
+| due_date | DATE | 待辦日期 |
+| due_time | VARCHAR(8) | 待辦時間（HH:MM） |
+| note | TEXT | 備註 |
+| status | ENUM | pending / done |
+| done_at | DATETIME | 處理完成時間 |
+| created_at | DATETIME | 建立時間 |
+
 ### `system_users` — 系統使用者
 
 | 欄位 | 類型 | 說明 |
@@ -158,11 +179,15 @@ Database: linebot
 用戶傳訊息
     │
     ▼
+自動呼叫 LINE Profile API 取得用戶顯示名稱與頭貼
+    │
+    ▼
 模糊比對 Q&A（rapidfuzz，相似度 ≥ 60%，僅比對已訓練建檔的 Q&A）
+關鍵字支援分隔符：, 、 ， ； ;
     │
     ├── 找到匹配 ──► 回傳對應答案 + 更新命中數
     │
-    └── 未找到 ───► 回覆「轉交客服」通知 + 記錄至待處理問題
+    └── 未找到 ───► 回覆「轉交客服」通知 + 記錄至待回覆清單
 ```
 
 ### 人工回覆流程
@@ -181,9 +206,11 @@ Database: linebot
     ▼
 小編登入後台 → 待回覆清單（側邊欄顯示紅色未讀數量）
     │
-    ├── 點「回覆」→ 輸入訊息 → 透過 LINE Push Message API 發送 → 自動標記已回覆
+    ├── 點「回覆」→ 輸入訊息 → 透過 LINE Push Message API 發送 → 自動標記已處理
+    │         └── 聊天記錄中以藍色氣泡顯示「小編回覆」（Bot 自動回覆為綠色）
     │
-    └── 點「已回覆」→ 填備註 → 標記已處理（適用於在 LINE 官方後台回覆的情況）
+    └── 點「待辦」→ 填入家屬/使用者/塔位編號/日期時間 → 建立待辦事項
+              └── 可勾選「同時標記問題為已處理」
 ```
 
 ### 管理員後台（`/admin`）
@@ -201,11 +228,34 @@ Database: linebot
 
 | 頁面 | 路徑 | 功能 |
 |------|------|------|
-| 儀表板 | `/dashboard` | 訓練進度、待回覆數量概覽 |
-| 待回覆清單 | `/dashboard/pending` | 查看待人工回覆訊息、透過 LINE 直接回覆或標記已處理 |
+| 儀表板 | `/dashboard` | 訓練進度、待回覆、待辦事項數量概覽 |
+| 待回覆清單 | `/dashboard/pending` | 查看待人工回覆訊息、透過 LINE 直接回覆或建立待辦事項 |
+| 待辦事項 | `/dashboard/todo` | 管理待辦清單，含逾期/緊急/即將到期三層警示 |
+| 聊天記錄 | `/dashboard/history` | 查看與用戶的完整對話（Bot回覆/小編回覆以不同顏色區分） |
 | Q&A 訓練 | `/dashboard/qa` | 編輯 Q&A、點擊「訓練建檔」完成訓練 |
 | 已訓練 Q&A | `/dashboard/trained` | 查看已建檔內容、匯出 CSV / XLS |
 | 建立 Q&A | `/dashboard/create-qa` | 手動新增或批次 CSV 匯入 |
+
+### Q&A 分類
+
+系統預設分類（可於建立/編輯時選擇，選「其他」可自填）：
+
+| 分類 | 說明 |
+|------|------|
+| 塔牌位啟用 | 塔位或牌位的啟用相關問題 |
+| 法會報名 | 法會活動報名相關問題 |
+| 行政手續 | 各類行政申辦手續 |
+| 款項確認 | 費用及款項相關確認 |
+| 其他 | 自訂分類（可填入任意名稱） |
+
+### 待辦事項警示規則
+
+| 狀態 | 底色 | 標籤 | 觸發條件 |
+|------|------|------|---------|
+| 逾期 | 紅色 | 逾期 | 已超過待辦日期 |
+| 緊急 | 紅色 | 緊急 | 距今 ≤ 1 天（明天到期）|
+| 即將到期 | 橘黃色 | 即將到期 | 距今 ≤ 2 天 |
+| 正常 | 白色 | 無 | 距今 > 2 天 |
 
 ---
 
@@ -521,4 +571,4 @@ TUNNEL_URL=https://xxx.trycloudflare.com
 
 ---
 
-*文件最後更新：2026-05-12（新增小編後台待回覆清單、LINE Push 回覆功能、用戶顯示名稱自動抓取）*
+*文件最後更新：2026-05-12（新增待辦事項、聊天記錄、Q&A 分類預設值、關鍵字多分隔符支援、待辦警示機制）*

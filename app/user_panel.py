@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.models import SystemUser, QAPair, PendingQuestion
+from app.models import SystemUser, QAPair, PendingQuestion, MessageLog, LineUser, TodoItem
 from app.auth import verify_password, create_session, destroy_session, get_current_user
 
 router = APIRouter()
@@ -19,6 +19,10 @@ def current_user_dep(request: Request, db: Session = Depends(get_db)) -> SystemU
 
 def get_reply_count(db: Session) -> int:
     return db.query(PendingQuestion).filter(PendingQuestion.status == "pending").count()
+
+
+def get_todo_count(db: Session) -> int:
+    return db.query(TodoItem).filter(TodoItem.status == "pending").count()
 
 
 # ── 登入 / 登出 ───────────────────────────────────────────────
@@ -62,6 +66,7 @@ def dashboard(request: Request, db: Session = Depends(get_db), user: SystemUser 
         "pending_count": pending_count,
         "reply_count": reply_count,
         "pending_reply_count": reply_count,
+        "todo_count": get_todo_count(db),
     })
 
 
@@ -79,6 +84,7 @@ def qa_list(request: Request, category: str = "", db: Session = Depends(get_db),
         "categories": [c[0] for c in categories],
         "current_category": category,
         "pending_reply_count": get_reply_count(db),
+        "todo_count": get_todo_count(db),
     })
 
 
@@ -122,6 +128,7 @@ def create_qa_page(request: Request, db: Session = Depends(get_db), user: System
         "user": user,
         "categories": [c[0] for c in categories],
         "pending_reply_count": get_reply_count(db),
+        "todo_count": get_todo_count(db),
     })
 
 
@@ -172,6 +179,7 @@ def pending_list(request: Request, db: Session = Depends(get_db), user: SystemUs
         "items": items,
         "pending_count": pending_count,
         "pending_reply_count": pending_count,
+        "todo_count": get_todo_count(db),
     })
 
 
@@ -211,13 +219,158 @@ def pending_reply(
     item = db.query(PendingQuestion).filter(PendingQuestion.id == item_id).first()
     if item and message.strip():
         try:
-            push_message(item.line_user_id, message.strip(), db)
+            push_message(item.line_user_id, message.strip(), db, msg_type="staff")
             item.status = "handled"
             item.note = f"[已回覆] {message.strip()[:50]}"
             db.commit()
         except Exception as e:
             return RedirectResponse(url=f"/dashboard/pending?error={str(e)[:80]}", status_code=302)
     return RedirectResponse(url="/dashboard/pending?replied=1", status_code=302)
+
+
+@router.post("/dashboard/pending/{item_id}/add-todo")
+def pending_add_todo(
+    item_id: int,
+    family_name: str = Form(""),
+    recipient_name: str = Form(""),
+    tower_number: str = Form(""),
+    task_content: str = Form(...),
+    due_date: str = Form(""),
+    due_time: str = Form(""),
+    note: str = Form(""),
+    mark_handled: str = Form(""),
+    db: Session = Depends(get_db),
+    user: SystemUser = Depends(current_user_dep),
+):
+    item = db.query(PendingQuestion).filter(PendingQuestion.id == item_id).first()
+    if item:
+        from datetime import date
+        todo = TodoItem(
+            family_name=family_name.strip() or (item.display_name or ""),
+            recipient_name=recipient_name.strip() or None,
+            tower_number=tower_number.strip() or None,
+            line_user_id=item.line_user_id,
+            created_by=user.display_name,
+            task_content=task_content.strip(),
+            due_date=date.fromisoformat(due_date) if due_date else None,
+            due_time=due_time or None,
+            note=note.strip() or None,
+        )
+        db.add(todo)
+        if mark_handled:
+            item.status = "handled"
+            item.note = f"[待辦] {task_content.strip()[:50]}"
+        db.commit()
+    return RedirectResponse(url="/dashboard/pending?todo_added=1", status_code=302)
+
+
+# ── 待辦事項 ──────────────────────────────────────────────────
+@router.get("/dashboard/todo", response_class=HTMLResponse)
+def todo_list(request: Request, db: Session = Depends(get_db), user: SystemUser = Depends(current_user_dep)):
+    pending_todos = db.query(TodoItem).filter(TodoItem.status == "pending").order_by(
+        TodoItem.due_date.asc(), TodoItem.due_time.asc(), TodoItem.created_at.asc()
+    ).all()
+    done_todos = db.query(TodoItem).filter(TodoItem.status == "done").order_by(
+        TodoItem.done_at.desc()
+    ).all()
+    from datetime import date, timedelta
+    today = date.today()
+    return templates.TemplateResponse(request=request, name="user_todo.html", context={
+        "user": user,
+        "pending_todos": pending_todos,
+        "done_todos": done_todos,
+        "todo_count": get_todo_count(db),
+        "pending_reply_count": get_reply_count(db),
+        "now_date": today.isoformat(),
+        "warn_date1": (today + timedelta(days=1)).isoformat(),
+        "warn_date2": (today + timedelta(days=2)).isoformat(),
+    })
+
+
+@router.post("/dashboard/todo/{todo_id}/done")
+def todo_done(todo_id: int, db: Session = Depends(get_db), user: SystemUser = Depends(current_user_dep)):
+    todo = db.query(TodoItem).filter(TodoItem.id == todo_id).first()
+    if todo:
+        todo.status = "done"
+        todo.done_at = datetime.now()
+        db.commit()
+    return RedirectResponse(url="/dashboard/todo", status_code=302)
+
+
+@router.post("/dashboard/todo/{todo_id}/reopen")
+def todo_reopen(todo_id: int, db: Session = Depends(get_db), user: SystemUser = Depends(current_user_dep)):
+    todo = db.query(TodoItem).filter(TodoItem.id == todo_id).first()
+    if todo:
+        todo.status = "pending"
+        todo.done_at = None
+        db.commit()
+    return RedirectResponse(url="/dashboard/todo", status_code=302)
+
+
+@router.get("/dashboard/todo/create", response_class=HTMLResponse)
+def todo_create_page(request: Request, db: Session = Depends(get_db), user: SystemUser = Depends(current_user_dep)):
+    return templates.TemplateResponse(request=request, name="user_todo_create.html", context={
+        "user": user,
+        "todo_count": get_todo_count(db),
+        "pending_reply_count": get_reply_count(db),
+        "todo_count": get_todo_count(db),
+    })
+
+
+@router.post("/dashboard/todo/create")
+def todo_create(
+    family_name: str = Form(""),
+    recipient_name: str = Form(""),
+    tower_number: str = Form(""),
+    task_content: str = Form(...),
+    due_date: str = Form(""),
+    due_time: str = Form(""),
+    note: str = Form(""),
+    db: Session = Depends(get_db),
+    user: SystemUser = Depends(current_user_dep),
+):
+    from datetime import date
+    todo = TodoItem(
+        family_name=family_name.strip() or None,
+        recipient_name=recipient_name.strip() or None,
+        tower_number=tower_number.strip() or None,
+        created_by=user.display_name,
+        task_content=task_content.strip(),
+        due_date=date.fromisoformat(due_date) if due_date else None,
+        due_time=due_time or None,
+        note=note.strip() or None,
+    )
+    db.add(todo)
+    db.commit()
+    return RedirectResponse(url="/dashboard/todo?created=1", status_code=302)
+
+
+# ── 聊天記錄 ─────────────────────────────────────────────────
+@router.get("/dashboard/history", response_class=HTMLResponse)
+def chat_history(request: Request, line_user_id: str = "", db: Session = Depends(get_db), user: SystemUser = Depends(current_user_dep)):
+    users = db.query(LineUser).order_by(LineUser.display_name).all()
+    messages = []
+    selected_user = None
+    if line_user_id:
+        selected_user = db.query(LineUser).filter(LineUser.line_user_id == line_user_id).first()
+        messages = db.query(MessageLog).filter(
+            MessageLog.line_user_id == line_user_id
+        ).order_by(MessageLog.created_at.asc()).all()
+    elif users:
+        selected_user = users[0]
+        line_user_id = selected_user.line_user_id
+        messages = db.query(MessageLog).filter(
+            MessageLog.line_user_id == line_user_id
+        ).order_by(MessageLog.created_at.asc()).all()
+    return templates.TemplateResponse(request=request, name="user_history.html", context={
+        "user": user,
+        "users": users,
+        "messages": messages,
+        "selected_user": selected_user,
+        "selected_uid": line_user_id,
+        "pending_reply_count": get_reply_count(db),
+        "todo_count": get_todo_count(db),
+    })
 
 
 # ── 已訓練 Q&A ────────────────────────────────────────────────
@@ -234,6 +387,7 @@ def trained_list(request: Request, category: str = "", db: Session = Depends(get
         "categories": [c[0] for c in categories],
         "current_category": category,
         "pending_reply_count": get_reply_count(db),
+        "todo_count": get_todo_count(db),
     })
 
 

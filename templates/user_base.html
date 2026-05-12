@@ -28,6 +28,13 @@
         <span class="badge bg-danger rounded-pill">{{ pending_reply_count }}</span>
         {% endif %}
       </a>
+      <a href="/dashboard/todo" class="{% if page=='todo' %}active{% endif %} d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-clipboard-check"></i> 待辦事項</span>
+        {% if todo_count and todo_count > 0 %}
+        <span class="badge bg-warning text-dark rounded-pill">{{ todo_count }}</span>
+        {% endif %}
+      </a>
+      <a href="/dashboard/history" class="{% if page=='history' %}active{% endif %}"><i class="bi bi-chat-square-text"></i> 聊天記錄</a>
       <a href="/dashboard/qa" class="{% if page=='qa' %}active{% endif %}"><i class="bi bi-question-circle"></i> Q&A 訓練</a>
       <a href="/dashboard/trained" class="{% if page=='trained' %}active{% endif %}"><i class="bi bi-patch-check"></i> 已訓練 Q&A</a>
       <a href="/dashboard/create-qa" class="{% if page=='create-qa' %}active{% endif %}"><i class="bi bi-plus-circle"></i> 建立 Q&A</a>
@@ -39,5 +46,32 @@
   </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+// 分類選單：切換「其他」自填欄位
+function catChange(sel, suffix) {
+  var hiddenEl = document.getElementById('cat_' + suffix);
+  var otherEl  = document.getElementById('catother_' + suffix);
+  if (sel.value === '__other__') {
+    otherEl.classList.remove('d-none');
+    hiddenEl.value = '';
+  } else {
+    otherEl.classList.add('d-none');
+    hiddenEl.value = sel.value;
+  }
+}
+// 自訂時間選單：合併時/分到 hidden input
+function updateTime(suffix) {
+  var h = document.getElementById('hour_' + suffix).value;
+  var m = document.getElementById('min_' + suffix).value;
+  var t = document.getElementById('time_' + suffix);
+  if (t) t.value = h + ':' + m;
+}
+// 頁面載入時初始化所有時間選單
+document.addEventListener('DOMContentLoaded', function() {
+  document.querySelectorAll('[id^="hour_"]').forEach(function(el) {
+    updateTime(el.id.replace('hour_', ''));
+  });
+});
+</script>
 </body>
 </html>

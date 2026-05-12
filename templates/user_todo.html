@@ -1,0 +1,176 @@
+{% extends "user_base.html" %}
+{% set page = "todo" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4><i class="bi bi-clipboard-check"></i> 待辦事項
+    {% if todo_count > 0 %}
+    <span class="badge bg-warning text-dark ms-2">{{ todo_count }} 件待處理</span>
+    {% endif %}
+  </h4>
+  <a href="/dashboard/todo/create" class="btn btn-sm btn-warning">
+    <i class="bi bi-plus-circle"></i> 新增待辦
+  </a>
+</div>
+
+{% if request.query_params.get('created') %}
+<div class="alert alert-success alert-dismissible fade show">
+  <i class="bi bi-check-circle"></i> 待辦事項已新增！
+  <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+{% endif %}
+
+<!-- 待處理清單 -->
+<div class="card mb-4">
+  <div class="card-header fw-bold">
+    <i class="bi bi-hourglass-split text-warning"></i> 待處理
+    <span class="badge bg-warning text-dark ms-1">{{ pending_todos | length }}</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>#</th>
+          <th>家屬</th>
+          <th>使用者</th>
+          <th>塔/牌位編號</th>
+          <th>待辦項目</th>
+          <th>待辦日期</th>
+          <th>待辦時間</th>
+          <th>備註</th>
+          <th>記錄日期</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in pending_todos %}
+        {% set due_str = t.due_date.strftime('%Y-%m-%d') if t.due_date else '' %}
+        {% set is_overdue  = due_str and due_str < now_date %}
+        {% set is_urgent   = due_str and due_str <= warn_date1 and not is_overdue %}
+        {% set is_warning  = due_str and due_str <= warn_date2 and not is_urgent and not is_overdue %}
+        <tr {% if is_overdue or is_urgent %}style="background:#f8d7da !important"{% elif is_warning %}style="background:#fff3cd !important"{% endif %}>
+          <td>
+            {{ t.id }}
+            {% if is_overdue %}
+            <span class="badge bg-danger ms-1">逾期</span>
+            {% elif is_urgent %}
+            <span class="badge bg-danger ms-1">緊急</span>
+            {% elif is_warning %}
+            <span class="badge bg-warning text-dark ms-1">即將到期</span>
+            {% endif %}
+          </td>
+          <td>{{ t.family_name or '—' }}</td>
+          <td>{{ t.recipient_name or '—' }}</td>
+          <td>{{ t.tower_number or '—' }}</td>
+          <td>{{ t.task_content }}</td>
+          <td>
+            {% if t.due_date %}
+            <span class="{% if is_overdue or is_urgent %}text-danger fw-bold{% elif is_warning %}fw-bold" style="color:#856404{% endif %}">
+              {{ t.due_date.strftime('%m/%d') }}
+            </span>
+            {% else %}—{% endif %}
+          </td>
+          <td>{{ t.due_time or '—' }}</td>
+          <td><small class="text-muted">{{ t.note or '—' }}</small></td>
+          <td><small>{{ t.created_at.strftime('%m/%d %H:%M') }}</small></td>
+          <td>
+            <button class="btn btn-sm btn-warning"
+                    data-bs-toggle="modal" data-bs-target="#doneModal{{ t.id }}">
+              <i class="bi bi-hourglass-split"></i> 待處理
+            </button>
+            <!-- 確認完成 Modal -->
+            <div class="modal fade" id="doneModal{{ t.id }}" tabindex="-1">
+              <div class="modal-dialog modal-sm">
+                <div class="modal-content">
+                  <div class="modal-header">
+                    <h6 class="modal-title">確認已處理？</h6>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                  </div>
+                  <div class="modal-body small text-muted">
+                    <strong>{{ t.task_content }}</strong>
+                    {% if t.family_name %}<div>家屬：{{ t.family_name }}</div>{% endif %}
+                  </div>
+                  <div class="modal-footer">
+                    <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <form method="post" action="/dashboard/todo/{{ t.id }}/done" class="d-inline">
+                      <button type="submit" class="btn btn-sm btn-success">
+                        <i class="bi bi-check2"></i> 確認已處理
+                      </button>
+                    </form>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="10" class="text-center text-muted py-4">
+            <i class="bi bi-inbox"></i> 目前沒有待處理的待辦事項
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 已完成清單 -->
+{% if done_todos %}
+<div class="card">
+  <div class="card-header fw-bold text-muted">
+    <i class="bi bi-check-circle"></i> 已完成
+    <span class="badge bg-secondary ms-1">{{ done_todos | length }}</span>
+    <button class="btn btn-sm btn-link text-muted float-end p-0"
+            type="button" data-bs-toggle="collapse" data-bs-target="#doneList">
+      展開 / 收合
+    </button>
+  </div>
+  <div class="collapse" id="doneList">
+    <div class="table-responsive">
+      <table class="table table-sm mb-0">
+        <thead class="table-light">
+          <tr>
+            <th>#</th>
+            <th>家屬</th>
+            <th>使用者</th>
+            <th>塔/牌位編號</th>
+            <th>待辦項目</th>
+            <th>待辦日期</th>
+            <th>備註</th>
+            <th>處理時間</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for t in done_todos %}
+          <tr class="text-muted">
+            <td>{{ t.id }}</td>
+            <td>{{ t.family_name or '—' }}</td>
+            <td>{{ t.recipient_name or '—' }}</td>
+            <td>{{ t.tower_number or '—' }}</td>
+            <td><s>{{ t.task_content }}</s></td>
+            <td>{{ t.due_date.strftime('%m/%d') if t.due_date else '—' }}</td>
+            <td><small>{{ t.note or '—' }}</small></td>
+            <td>
+              <span class="badge bg-success"><i class="bi bi-check2"></i> 已處理</span>
+              <div class="text-secondary mt-1" style="font-size:0.75rem">
+                <i class="bi bi-clock"></i> {{ t.done_at.strftime('%m/%d %H:%M') if t.done_at else '—' }}
+              </div>
+            </td>
+            <td>
+              <form method="post" action="/dashboard/todo/{{ t.id }}/reopen">
+                <button class="btn btn-sm btn-outline-secondary">
+                  <i class="bi bi-arrow-counterclockwise"></i> 重開
+                </button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}

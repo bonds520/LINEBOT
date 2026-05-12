@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, Integer, Enum, Float, Boolean
+from sqlalchemy import Column, String, Text, DateTime, Date, Integer, Enum, Float, Boolean
 from sqlalchemy.sql import func
 from app.database import Base
 
@@ -53,6 +53,24 @@ class SystemUser(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class TodoItem(Base):
+    __tablename__ = "todo_items"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    family_name = Column(String(255), nullable=True)       # 家屬姓名
+    recipient_name = Column(String(255), nullable=True)    # 使用者（服務接受者）
+    tower_number = Column(String(64), nullable=True)       # 塔/牌位編號
+    line_user_id = Column(String(64), nullable=True)       # 關聯 LINE 用戶
+    created_by = Column(String(128), nullable=False)       # 建立者（小編帳號）
+    task_content = Column(Text, nullable=False)            # 待辦項目
+    due_date = Column(Date, nullable=True)                 # 待辦日期
+    due_time = Column(String(8), nullable=True)            # 待辦時間 HH:MM
+    note = Column(Text, nullable=True)                     # 備註
+    status = Column(Enum("pending", "done"), default="pending", index=True)
+    done_at = Column(DateTime, nullable=True)              # 處理完成時間
+    created_at = Column(DateTime, server_default=func.now())
 
 
 class PendingQuestion(Base):

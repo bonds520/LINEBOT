@@ -1,0 +1,64 @@
+{% extends "user_base.html" %}
+{% set page = "todo" %}
+{% block content %}
+<div class="d-flex align-items-center mb-4 gap-2">
+  <a href="/dashboard/todo" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-left"></i></a>
+  <h4 class="mb-0"><i class="bi bi-clipboard-plus"></i> 新增待辦事項</h4>
+</div>
+
+<div class="card" style="max-width:600px">
+  <div class="card-body">
+    <form method="post" action="/dashboard/todo/create">
+      <div class="row g-3">
+        <div class="col-6">
+          <label class="form-label fw-bold">家屬姓名</label>
+          <input type="text" class="form-control" name="family_name" placeholder="家屬姓名（選填）">
+        </div>
+        <div class="col-6">
+          <label class="form-label fw-bold">使用者</label>
+          <input type="text" class="form-control" name="recipient_name" placeholder="">
+        </div>
+        <div class="col-12">
+          <label class="form-label fw-bold">塔/牌位編號</label>
+          <input type="text" class="form-control" name="tower_number" placeholder="塔或牌位編號（選填）">
+        </div>
+        <div class="col-12">
+          <label class="form-label fw-bold">待辦項目 <span class="text-danger">*</span></label>
+          <textarea class="form-control" name="task_content" rows="3"
+                    placeholder="請輸入待辦事項內容" required></textarea>
+        </div>
+        <div class="col-6">
+          <label class="form-label fw-bold">待辦日期</label>
+          <input type="date" class="form-control" name="due_date">
+        </div>
+        <div class="col-6">
+          <label class="form-label fw-bold">待辦時間</label>
+          <div class="d-flex align-items-center gap-1">
+            <select class="form-select" id="hour_new" onchange="updateTime('new')" style="width:90px">
+              {% for h in range(24) %}<option value="{{ '%02d'|format(h) }}">{{ '%02d'|format(h) }}</option>{% endfor %}
+            </select>
+            <span class="fw-bold">:</span>
+            <select class="form-select" id="min_new" onchange="updateTime('new')" style="width:90px">
+              <option value="00">00</option>
+              <option value="15">15</option>
+              <option value="30">30</option>
+              <option value="45">45</option>
+            </select>
+          </div>
+          <input type="hidden" name="due_time" id="time_new">
+        </div>
+        <div class="col-12">
+          <label class="form-label fw-bold">備註</label>
+          <textarea class="form-control" name="note" rows="2" placeholder="備註（選填）"></textarea>
+        </div>
+        <div class="col-12 d-flex gap-2">
+          <button type="submit" class="btn btn-warning">
+            <i class="bi bi-clipboard-check"></i> 建立待辦
+          </button>
+          <a href="/dashboard/todo" class="btn btn-outline-secondary">取消</a>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

@@ -31,10 +31,18 @@
           </div>
           <div class="mb-4">
             <label class="form-label">分類 <small class="text-muted">（選填）</small></label>
-            <input type="text" name="category" class="form-control" value="一般" list="category-list">
-            <datalist id="category-list">
-              {% for cat in categories %}<option value="{{ cat }}">{% endfor %}
-            </datalist>
+            <select class="form-select" onchange="catChange(this,'new')">
+              <option value="塔牌位啟用">塔牌位啟用</option>
+              <option value="法會報名">法會報名</option>
+              <option value="行政手續">行政手續</option>
+              <option value="款項確認">款項確認</option>
+              <option value="__other__">其他</option>
+            </select>
+            <input type="hidden" name="category" id="cat_new" value="塔牌位啟用">
+            <div id="catother_new" class="mt-2 d-none">
+              <input type="text" class="form-control form-control-sm" placeholder="請輸入自訂分類名稱"
+                     oninput="document.getElementById('cat_new').value=this.value">
+            </div>
           </div>
           <button type="submit" class="btn" style="background:#06C755;color:#fff">
             <i class="bi bi-plus-circle"></i> 新增 Q&A

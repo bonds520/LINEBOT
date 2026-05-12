@@ -1,0 +1,133 @@
+{% extends "user_base.html" %}
+{% set page = "history" %}
+{% block content %}
+<h4 class="mb-3"><i class="bi bi-chat-square-text"></i> 聊天記錄</h4>
+
+<div class="row g-3" style="height:calc(100vh - 140px)">
+
+  <!-- 左側：用戶清單 -->
+  <div class="col-3">
+    <div class="card h-100">
+      <div class="card-header fw-bold small">用戶列表</div>
+      <div class="list-group list-group-flush overflow-auto" style="max-height:calc(100vh - 200px)">
+        {% for u in users %}
+        <a href="/dashboard/history?line_user_id={{ u.line_user_id }}"
+           class="list-group-item list-group-item-action py-2 {% if u.line_user_id == selected_uid %}active{% endif %}">
+          <div class="d-flex align-items-center gap-2">
+            <i class="bi bi-person-circle fs-5"></i>
+            <div>
+              <div class="small fw-bold">{{ u.display_name or '未知用戶' }}</div>
+              <div class="text-muted" style="font-size:0.7rem">{{ u.line_user_id[:16] }}…</div>
+            </div>
+          </div>
+        </a>
+        {% else %}
+        <div class="list-group-item text-muted small text-center py-3">尚無用戶</div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <!-- 右側：聊天視窗 -->
+  <div class="col-9 d-flex flex-column">
+    {% if selected_user %}
+    <!-- 聊天標題 -->
+    <div class="card mb-2">
+      <div class="card-body py-2 d-flex align-items-center gap-2">
+        <i class="bi bi-person-circle fs-4 text-muted"></i>
+        <div>
+          <div class="fw-bold">{{ selected_user.display_name or '未知用戶' }}</div>
+          <div class="text-muted small">{{ selected_user.line_user_id }}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 對話氣泡區 -->
+    <div class="card flex-grow-1">
+      <div class="card-body overflow-auto p-3" style="max-height:calc(100vh - 280px); background:#f0f2f5"
+           id="chatBox">
+        {% if messages %}
+          {% set ns = namespace(last_date="") %}
+          {% for msg in messages %}
+            {% set msg_date = msg.created_at.strftime('%Y/%m/%d') %}
+            {% if msg_date != ns.last_date %}
+            <div class="text-center my-2">
+              <span class="badge bg-secondary bg-opacity-50 text-dark small px-3">{{ msg_date }}</span>
+            </div>
+            {% set ns.last_date = msg_date %}
+            {% endif %}
+
+            {% if msg.direction == 'incoming' %}
+            <!-- 用戶訊息（左側） -->
+            <div class="d-flex align-items-end gap-2 mb-2">
+              <i class="bi bi-person-circle fs-4 text-muted flex-shrink-0"></i>
+              <div>
+                <div class="small text-muted mb-1">{{ selected_user.display_name or '用戶' }}</div>
+                <div class="rounded-3 px-3 py-2 d-inline-block shadow-sm"
+                     style="background:#fff; max-width:320px; word-break:break-word">
+                  {{ msg.content }}
+                </div>
+                <div class="text-muted mt-1" style="font-size:0.7rem">
+                  {{ msg.created_at.strftime('%H:%M') }}
+                </div>
+              </div>
+            </div>
+            {% elif msg.message_type == 'staff' %}
+            <!-- 小編人工回覆（右側，藍色） -->
+            <div class="d-flex align-items-end justify-content-end gap-2 mb-2">
+              <div class="text-end">
+                <div class="small text-muted mb-1">小編回覆</div>
+                <div class="rounded-3 px-3 py-2 d-inline-block shadow-sm"
+                     style="background:#0d6efd; color:#fff; max-width:320px; word-break:break-word">
+                  {{ msg.content }}
+                </div>
+                <div class="text-muted mt-1" style="font-size:0.7rem">
+                  {{ msg.created_at.strftime('%H:%M') }}
+                </div>
+              </div>
+              <i class="bi bi-person-badge fs-4 flex-shrink-0 text-primary"></i>
+            </div>
+            {% else %}
+            <!-- Bot 自動回覆（右側，綠色） -->
+            <div class="d-flex align-items-end justify-content-end gap-2 mb-2">
+              <div class="text-end">
+                <div class="small text-muted mb-1">Bot</div>
+                <div class="rounded-3 px-3 py-2 d-inline-block shadow-sm"
+                     style="background:#06C755; color:#fff; max-width:320px; word-break:break-word">
+                  {{ msg.content }}
+                </div>
+                <div class="text-muted mt-1" style="font-size:0.7rem">
+                  {{ msg.created_at.strftime('%H:%M') }}
+                </div>
+              </div>
+              <i class="bi bi-robot fs-4 flex-shrink-0" style="color:#06C755"></i>
+            </div>
+            {% endif %}
+          {% endfor %}
+        {% else %}
+        <div class="text-center text-muted py-5">
+          <i class="bi bi-chat-slash fs-1"></i>
+          <p class="mt-2">尚無對話記錄</p>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+    {% else %}
+    <div class="card flex-grow-1">
+      <div class="card-body d-flex align-items-center justify-content-center text-muted">
+        <div class="text-center">
+          <i class="bi bi-chat-square fs-1"></i>
+          <p class="mt-2">請從左側選擇用戶查看對話</p>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+  // 自動捲到最下方
+  const box = document.getElementById('chatBox');
+  if (box) box.scrollTop = box.scrollHeight;
+</script>
+{% endblock %}
