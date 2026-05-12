@@ -75,7 +75,8 @@ Database: linebot
 │   ├── user_dashboard.html  # 小編儀表板
 │   ├── user_qa.html         # Q&A 訓練列表
 │   ├── user_create_qa.html  # 建立 Q&A
-│   └── user_trained.html    # 已訓練 Q&A（可匯出）
+│   ├── user_trained.html    # 已訓練 Q&A（可匯出）
+│   └── user_pending.html    # 待回覆清單（人工回覆）
 ├── backups/                 # 資料庫備份存放目錄
 ├── .env                     # 環境變數（不納入版控）
 ├── .env.example             # 環境變數範本
@@ -164,6 +165,27 @@ Database: linebot
     └── 未找到 ───► 回覆「轉交客服」通知 + 記錄至待處理問題
 ```
 
+### 人工回覆流程
+
+當 Bot 無法比對到答案時，訊息進入待回覆清單，小編可從後台處理：
+
+```
+用戶傳訊息（無法比對）
+    │
+    ▼
+系統自動回覆「客服人員將儘快回覆」
+    │
+    ▼
+記錄至 pending_questions（含用戶顯示名稱）
+    │
+    ▼
+小編登入後台 → 待回覆清單（側邊欄顯示紅色未讀數量）
+    │
+    ├── 點「回覆」→ 輸入訊息 → 透過 LINE Push Message API 發送 → 自動標記已回覆
+    │
+    └── 點「已回覆」→ 填備註 → 標記已處理（適用於在 LINE 官方後台回覆的情況）
+```
+
 ### 管理員後台（`/admin`）
 
 | 頁面 | 路徑 | 功能 |
@@ -179,7 +201,8 @@ Database: linebot
 
 | 頁面 | 路徑 | 功能 |
 |------|------|------|
-| 儀表板 | `/dashboard` | 訓練進度概覽 |
+| 儀表板 | `/dashboard` | 訓練進度、待回覆數量概覽 |
+| 待回覆清單 | `/dashboard/pending` | 查看待人工回覆訊息、透過 LINE 直接回覆或標記已處理 |
 | Q&A 訓練 | `/dashboard/qa` | 編輯 Q&A、點擊「訓練建檔」完成訓練 |
 | 已訓練 Q&A | `/dashboard/trained` | 查看已建檔內容、匯出 CSV / XLS |
 | 建立 Q&A | `/dashboard/create-qa` | 手動新增或批次 CSV 匯入 |
@@ -498,4 +521,4 @@ TUNNEL_URL=https://xxx.trycloudflare.com
 
 ---
 
-*文件最後更新：2026-05-11（新增 Cloudflare Tunnel 自動更新 Webhook 機制）*
+*文件最後更新：2026-05-12（新增小編後台待回覆清單、LINE Push 回覆功能、用戶顯示名稱自動抓取）*

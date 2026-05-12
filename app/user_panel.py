@@ -17,6 +17,10 @@ def current_user_dep(request: Request, db: Session = Depends(get_db)) -> SystemU
     return get_current_user(request, db)
 
 
+def get_reply_count(db: Session) -> int:
+    return db.query(PendingQuestion).filter(PendingQuestion.status == "pending").count()
+
+
 # ── 登入 / 登出 ───────────────────────────────────────────────
 @router.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
@@ -50,11 +54,14 @@ def dashboard(request: Request, db: Session = Depends(get_db), user: SystemUser 
     qa_count = db.query(func.count(QAPair.id)).filter(QAPair.is_active == True).scalar()
     trained_count = db.query(func.count(QAPair.id)).filter(QAPair.is_trained == True).scalar()
     pending_count = db.query(func.count(QAPair.id)).filter(QAPair.is_trained == False, QAPair.is_active == True).scalar()
+    reply_count = db.query(func.count(PendingQuestion.id)).filter(PendingQuestion.status == "pending").scalar()
     return templates.TemplateResponse(request=request, name="user_dashboard.html", context={
         "user": user,
         "qa_count": qa_count,
         "trained_count": trained_count,
         "pending_count": pending_count,
+        "reply_count": reply_count,
+        "pending_reply_count": reply_count,
     })
 
 
@@ -71,6 +78,7 @@ def qa_list(request: Request, category: str = "", db: Session = Depends(get_db),
         "qa_list": qa_list,
         "categories": [c[0] for c in categories],
         "current_category": category,
+        "pending_reply_count": get_reply_count(db),
     })
 
 
@@ -113,6 +121,7 @@ def create_qa_page(request: Request, db: Session = Depends(get_db), user: System
     return templates.TemplateResponse(request=request, name="user_create_qa.html", context={
         "user": user,
         "categories": [c[0] for c in categories],
+        "pending_reply_count": get_reply_count(db),
     })
 
 
@@ -150,6 +159,67 @@ async def create_qa_import(file: UploadFile = File(...), db: Session = Depends(g
     return RedirectResponse(url=f"/dashboard/create-qa?imported={count}", status_code=302)
 
 
+# ── 待回覆清單 ───────────────────────────────────────────────
+@router.get("/dashboard/pending", response_class=HTMLResponse)
+def pending_list(request: Request, db: Session = Depends(get_db), user: SystemUser = Depends(current_user_dep)):
+    items = db.query(PendingQuestion).order_by(
+        PendingQuestion.status.asc(),
+        PendingQuestion.created_at.desc()
+    ).all()
+    pending_count = sum(1 for i in items if i.status == "pending")
+    return templates.TemplateResponse(request=request, name="user_pending.html", context={
+        "user": user,
+        "items": items,
+        "pending_count": pending_count,
+        "pending_reply_count": pending_count,
+    })
+
+
+@router.post("/dashboard/pending/{item_id}/handle")
+def pending_handle(
+    item_id: int,
+    note: str = Form(""),
+    db: Session = Depends(get_db),
+    user: SystemUser = Depends(current_user_dep),
+):
+    item = db.query(PendingQuestion).filter(PendingQuestion.id == item_id).first()
+    if item:
+        item.status = "handled"
+        item.note = note
+        db.commit()
+    return RedirectResponse(url="/dashboard/pending", status_code=302)
+
+
+@router.post("/dashboard/pending/{item_id}/reopen")
+def pending_reopen(item_id: int, db: Session = Depends(get_db), user: SystemUser = Depends(current_user_dep)):
+    item = db.query(PendingQuestion).filter(PendingQuestion.id == item_id).first()
+    if item:
+        item.status = "pending"
+        item.note = None
+        db.commit()
+    return RedirectResponse(url="/dashboard/pending", status_code=302)
+
+
+@router.post("/dashboard/pending/{item_id}/reply")
+def pending_reply(
+    item_id: int,
+    message: str = Form(...),
+    db: Session = Depends(get_db),
+    user: SystemUser = Depends(current_user_dep),
+):
+    from app.handlers import push_message
+    item = db.query(PendingQuestion).filter(PendingQuestion.id == item_id).first()
+    if item and message.strip():
+        try:
+            push_message(item.line_user_id, message.strip(), db)
+            item.status = "handled"
+            item.note = f"[已回覆] {message.strip()[:50]}"
+            db.commit()
+        except Exception as e:
+            return RedirectResponse(url=f"/dashboard/pending?error={str(e)[:80]}", status_code=302)
+    return RedirectResponse(url="/dashboard/pending?replied=1", status_code=302)
+
+
 # ── 已訓練 Q&A ────────────────────────────────────────────────
 @router.get("/dashboard/trained", response_class=HTMLResponse)
 def trained_list(request: Request, category: str = "", db: Session = Depends(get_db), user: SystemUser = Depends(current_user_dep)):
@@ -163,6 +233,7 @@ def trained_list(request: Request, category: str = "", db: Session = Depends(get
         "qa_list": qa_list,
         "categories": [c[0] for c in categories],
         "current_category": category,
+        "pending_reply_count": get_reply_count(db),
     })
 
 

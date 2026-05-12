@@ -19,7 +19,7 @@
       </div>
     </div>
   </div>
-  <div class="col-md-4">
+  <div class="col-md-3">
     <div class="card text-white bg-warning">
       <div class="card-body">
         <div class="fs-2 fw-bold">{{ pending_count }}</div>
@@ -27,8 +27,19 @@
       </div>
     </div>
   </div>
+  <div class="col-md-3">
+    <a href="/dashboard/pending" class="text-decoration-none">
+      <div class="card text-white bg-danger">
+        <div class="card-body">
+          <div class="fs-2 fw-bold">{{ reply_count }}</div>
+          <div>待回覆訊息</div>
+        </div>
+      </div>
+    </a>
+  </div>
 </div>
 <div class="mt-4 d-flex gap-2 flex-wrap">
+  <a href="/dashboard/pending" class="btn btn-danger"><i class="bi bi-chat-left-dots"></i> 待回覆清單{% if reply_count > 0 %} ({{ reply_count }}){% endif %}</a>
   <a href="/dashboard/create-qa" class="btn" style="background:#06C755;color:#fff"><i class="bi bi-plus-circle"></i> 建立 Q&A</a>
   <a href="/dashboard/qa" class="btn btn-outline-secondary"><i class="bi bi-list-ul"></i> Q&A 訓練列表</a>
   <a href="/dashboard/trained" class="btn btn-outline-info"><i class="bi bi-patch-check"></i> 已訓練 Q&A</a>

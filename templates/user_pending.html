@@ -1,55 +1,173 @@
 {% extends "user_base.html" %}
 {% set page = "pending" %}
 {% block content %}
-<h4 class="mb-4">待處理問題</h4>
-<div class="card">
-  <div class="table-responsive">
-    <table class="table table-hover mb-0">
-      <thead class="table-light">
-        <tr><th>#</th><th>用戶</th><th>問題內容</th><th>時間</th><th>狀態</th><th>操作</th></tr>
-      </thead>
-      <tbody>
-        {% for p in pending %}
-        <tr class="{% if p.status == 'pending' %}table-warning{% endif %}">
-          <td>{{ p.id }}</td>
-          <td><small>{{ p.display_name or p.line_user_id[:8] + '...' }}</small></td>
-          <td>{{ p.question }}</td>
-          <td><small>{{ p.created_at.strftime('%m/%d %H:%M') }}</small></td>
-          <td>
-            {% if p.status == 'pending' %}
-            <span class="badge bg-warning text-dark">待處理</span>
-            {% else %}
-            <span class="badge bg-success">已處理</span>
-            {% endif %}
-          </td>
-          <td>
-            {% if p.status == 'pending' %}
-            <button class="btn btn-sm btn-outline-success" data-bs-toggle="modal" data-bs-target="#handleModal{{ p.id }}">標記處理</button>
-            {% else %}
-            <small class="text-muted">{{ p.note or '' }}</small>
-            {% endif %}
-          </td>
-        </tr>
-        <div class="modal fade" id="handleModal{{ p.id }}" tabindex="-1">
-          <div class="modal-dialog">
-            <div class="modal-content">
-              <form method="post" action="/dashboard/pending/{{ p.id }}/handle">
-                <div class="modal-header"><h5 class="modal-title">標記已處理</h5></div>
-                <div class="modal-body">
-                  <p><strong>問題：</strong>{{ p.question }}</p>
-                  <div class="mb-3"><label class="form-label">備註（選填）</label><textarea name="note" class="form-control" rows="2"></textarea></div>
-                </div>
-                <div class="modal-footer">
-                  <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-                  <button type="submit" class="btn btn-success">確認已處理</button>
-                </div>
-              </form>
-            </div>
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4><i class="bi bi-chat-left-dots"></i> 待回覆清單
+    {% if pending_count > 0 %}
+    <span class="badge bg-danger ms-2">{{ pending_count }} 則待回覆</span>
+    {% endif %}
+  </h4>
+</div>
+
+{% if request.query_params.get('replied') %}
+<div class="alert alert-success alert-dismissible fade show">
+  <i class="bi bi-check-circle"></i> 回覆已透過 LINE 送出！
+  <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+{% endif %}
+{% if request.query_params.get('error') %}
+<div class="alert alert-danger alert-dismissible fade show">
+  <i class="bi bi-exclamation-triangle"></i> 回覆失敗：{{ request.query_params.get('error') }}
+  <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+{% endif %}
+
+{% if pending_count == 0 %}
+<div class="alert alert-success">
+  <i class="bi bi-check-circle"></i> 目前沒有待回覆的訊息！
+</div>
+{% endif %}
+
+<!-- 待回覆 -->
+{% set pending_items = items | selectattr("status", "equalto", "pending") | list %}
+{% if pending_items %}
+<div class="card mb-4 border-danger">
+  <div class="card-header fw-bold text-danger">
+    <i class="bi bi-exclamation-circle"></i> 尚未回覆
+    <span class="badge bg-danger ms-1">{{ pending_items | length }}</span>
+  </div>
+  <div class="list-group list-group-flush">
+    {% for item in pending_items %}
+    <div class="list-group-item">
+      <div class="d-flex justify-content-between align-items-start gap-2">
+        <!-- 用戶與問題 -->
+        <div class="flex-grow-1">
+          <div class="d-flex align-items-center mb-1">
+            <i class="bi bi-person-circle text-muted me-2"></i>
+            <strong>{{ item.display_name or '未知用戶' }}</strong>
+            <code class="ms-2 small text-muted">{{ item.line_user_id[:16] }}…</code>
+            <small class="text-muted ms-2">{{ item.created_at.strftime('%m/%d %H:%M') }}</small>
           </div>
+          <div class="p-2 bg-light rounded">{{ item.question }}</div>
         </div>
-        {% endfor %}
-      </tbody>
-    </table>
+        <!-- 操作按鈕 -->
+        <div class="d-flex flex-column gap-1" style="min-width:120px">
+          <button class="btn btn-sm btn-primary"
+                  data-bs-toggle="modal"
+                  data-bs-target="#replyModal{{ item.id }}">
+            <i class="bi bi-reply"></i> 回覆
+          </button>
+          <button class="btn btn-sm btn-outline-success"
+                  data-bs-toggle="modal"
+                  data-bs-target="#handleModal{{ item.id }}">
+            <i class="bi bi-check2"></i> 已回覆
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 回覆 Modal（透過 LINE 發送） -->
+    <div class="modal fade" id="replyModal{{ item.id }}" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h6 class="modal-title"><i class="bi bi-reply"></i> 回覆給 {{ item.display_name or '用戶' }}</h6>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <form method="post" action="/dashboard/pending/{{ item.id }}/reply">
+            <div class="modal-body">
+              <div class="mb-2 p-2 bg-light rounded small text-muted">
+                <i class="bi bi-chat-left-quote"></i> {{ item.question }}
+              </div>
+              <textarea class="form-control" name="message" rows="4"
+                        placeholder="輸入要傳送給用戶的訊息..." required></textarea>
+              <div class="form-text"><i class="bi bi-info-circle"></i> 訊息將透過 LINE 直接發送給用戶，並自動標記為已回覆。</div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+              <button type="submit" class="btn btn-primary">
+                <i class="bi bi-send"></i> 送出回覆
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- 標記已回覆 Modal（無需發送訊息） -->
+    <div class="modal fade" id="handleModal{{ item.id }}" tabindex="-1">
+      <div class="modal-dialog modal-sm">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h6 class="modal-title">標記為已回覆</h6>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <form method="post" action="/dashboard/pending/{{ item.id }}/handle">
+            <div class="modal-body">
+              <p class="small text-muted mb-2">{{ item.question }}</p>
+              <textarea class="form-control form-control-sm" name="note"
+                        rows="2" placeholder="備註（選填）"></textarea>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">取消</button>
+              <button type="submit" class="btn btn-sm btn-success">確認已回覆</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
   </div>
 </div>
+{% endif %}
+
+<!-- 已回覆 -->
+{% set handled_items = items | selectattr("status", "equalto", "handled") | list %}
+{% if handled_items %}
+<div class="card">
+  <div class="card-header fw-bold text-muted">
+    <i class="bi bi-check-circle"></i> 已回覆紀錄
+    <span class="badge bg-secondary ms-1">{{ handled_items | length }}</span>
+    <button class="btn btn-sm btn-link text-muted float-end p-0"
+            type="button" data-bs-toggle="collapse" data-bs-target="#handledList">
+      展開 / 收合
+    </button>
+  </div>
+  <div class="collapse" id="handledList">
+    <div class="list-group list-group-flush">
+      {% for item in handled_items %}
+      <div class="list-group-item bg-light">
+        <div class="d-flex justify-content-between align-items-start">
+          <div class="flex-grow-1 me-3">
+            <div class="d-flex align-items-center mb-1">
+              <i class="bi bi-person-circle text-muted me-2"></i>
+              <span class="text-muted">{{ item.display_name or '未知用戶' }}</span>
+              <small class="text-muted ms-2">{{ item.created_at.strftime('%m/%d %H:%M') }}</small>
+            </div>
+            <div class="small text-muted">{{ item.question }}</div>
+            {% if item.note %}
+            <div class="small text-success mt-1"><i class="bi bi-chat-right-text"></i> {{ item.note }}</div>
+            {% endif %}
+          </div>
+          <form method="post" action="/dashboard/pending/{{ item.id }}/reopen" style="min-width:80px">
+            <button class="btn btn-sm btn-outline-secondary w-100"
+                    onclick="return confirm('重新開啟此問題？')">
+              <i class="bi bi-arrow-counterclockwise"></i> 重開
+            </button>
+          </form>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% if not items %}
+<div class="text-center py-5 text-muted">
+  <i class="bi bi-inbox fs-1"></i>
+  <p class="mt-3">尚無任何待回覆紀錄</p>
+</div>
+{% endif %}
+
 {% endblock %}

@@ -1,6 +1,6 @@
 from linebot.v3.messaging import (
     ApiClient, MessagingApi, Configuration,
-    ReplyMessageRequest, TextMessage
+    ReplyMessageRequest, PushMessageRequest, TextMessage
 )
 from sqlalchemy.orm import Session
 from app.models import LineUser, MessageLog, QAPair, PendingQuestion
@@ -42,11 +42,21 @@ def log_message(db: Session, line_user_id: str, direction: str, message_type: st
     db.commit()
 
 
+def fetch_profile(messaging_api: MessagingApi, user_id: str):
+    try:
+        profile = messaging_api.get_profile(user_id)
+        return profile.display_name, profile.picture_url
+    except Exception:
+        return None, None
+
+
 def handle_text_message(event, db: Session):
     user_id = event.source.user_id
     text = event.message.text
 
-    user = upsert_user(db, user_id)
+    messaging_api = get_messaging_api()
+    display_name, picture_url = fetch_profile(messaging_api, user_id)
+    user = upsert_user(db, user_id, display_name, picture_url)
     log_message(db, user_id, "incoming", "text", text)
 
     result = find_best_match(text, db)
@@ -66,7 +76,6 @@ def handle_text_message(event, db: Session):
         db.add(pending)
         db.commit()
 
-    messaging_api = get_messaging_api()
     messaging_api.reply_message(
         ReplyMessageRequest(
             reply_token=event.reply_token,
@@ -77,11 +86,20 @@ def handle_text_message(event, db: Session):
     log_message(db, user_id, "outgoing", "text", reply_text)
 
 
+def push_message(line_user_id: str, text: str, db: Session):
+    messaging_api = get_messaging_api()
+    messaging_api.push_message(
+        PushMessageRequest(to=line_user_id, messages=[TextMessage(text=text)])
+    )
+    log_message(db, line_user_id, "outgoing", "text", text)
+
+
 def handle_follow_event(event, db: Session):
     user_id = event.source.user_id
-    upsert_user(db, user_id)
-
     messaging_api = get_messaging_api()
+    display_name, picture_url = fetch_profile(messaging_api, user_id)
+    upsert_user(db, user_id, display_name, picture_url)
+
     messaging_api.reply_message(
         ReplyMessageRequest(
             reply_token=event.reply_token,
