@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.models import SystemUser, QAPair, PendingQuestion, MessageLog, LineUser, TodoItem
+from app.models import SystemUser, QAPair, PendingQuestion, MessageLog, LineUser, TodoItem, UserTag
 from app.auth import verify_password, create_session, destroy_session, get_current_user
 
 router = APIRouter()
@@ -202,12 +202,21 @@ def pending_list(request: Request, db: Session = Depends(get_db), user: SystemUs
         PendingQuestion.created_at.desc()
     ).all()
     pending_count = sum(1 for i in items if i.status == "pending")
+    user_tags_map = {}
+    user_notes_map = {}
+    for item in items:
+        utags = db.query(UserTag).filter(UserTag.line_user_id == item.line_user_id).all()
+        user_tags_map[item.line_user_id] = utags
+        lu = db.query(LineUser).filter(LineUser.line_user_id == item.line_user_id).first()
+        user_notes_map[item.line_user_id] = lu.note if lu else None
     return templates.TemplateResponse(request=request, name="user_pending.html", context={
         "user": user,
         "items": items,
         "pending_count": pending_count,
         "pending_reply_count": pending_count,
         "todo_count": get_todo_count(db),
+        "user_tags_map": user_tags_map,
+        "user_notes_map": user_notes_map,
     })
 
 
@@ -375,7 +384,7 @@ def todo_create(
 
 # ── 聊天記錄 ─────────────────────────────────────────────────
 @router.get("/dashboard/history", response_class=HTMLResponse)
-def chat_history(request: Request, line_user_id: str = "", db: Session = Depends(get_db), user: SystemUser = Depends(current_user_dep)):
+def chat_history(request: Request, line_user_id: str = "", anchor: str = "", db: Session = Depends(get_db), user: SystemUser = Depends(current_user_dep)):
     users = db.query(LineUser).order_by(LineUser.display_name).all()
     messages = []
     selected_user = None
@@ -390,15 +399,90 @@ def chat_history(request: Request, line_user_id: str = "", db: Session = Depends
         messages = db.query(MessageLog).filter(
             MessageLog.line_user_id == line_user_id
         ).order_by(MessageLog.created_at.asc()).all()
+
+    # 找最靠近 anchor 時間戳的訊息 ID
+    anchor_msg_id = None
+    if anchor and messages:
+        try:
+            from datetime import datetime as dt
+            anchor_dt = dt.fromisoformat(anchor)
+            closest = min(messages, key=lambda m: abs((m.created_at - anchor_dt).total_seconds()))
+            anchor_msg_id = closest.id
+        except Exception:
+            pass
+
+    tags = db.query(UserTag).filter(UserTag.line_user_id == line_user_id).all() if line_user_id else []
+    all_user_tags = {}
+    for u in users:
+        utags = db.query(UserTag).filter(UserTag.line_user_id == u.line_user_id).all()
+        all_user_tags[u.line_user_id] = utags
     return templates.TemplateResponse(request=request, name="user_history.html", context={
         "user": user,
         "users": users,
         "messages": messages,
         "selected_user": selected_user,
         "selected_uid": line_user_id,
+        "anchor_msg_id": anchor_msg_id,
+        "tags": tags,
+        "all_user_tags": all_user_tags,
+        "tag_colors": TAG_COLORS,
+        "tag_color_labels": TAG_COLOR_LABELS,
         "pending_reply_count": get_reply_count(db),
         "todo_count": get_todo_count(db),
     })
+
+
+# ── 用戶標籤與備註 ───────────────────────────────────────────────
+TAG_COLORS = ["primary", "danger", "warning", "success", "info", "secondary", "dark"]
+TAG_COLOR_LABELS = {"primary": "藍", "danger": "紅", "warning": "橘", "success": "綠", "info": "青", "secondary": "灰", "dark": "黑"}
+
+@router.post("/dashboard/user/{line_user_id}/tag/add")
+def user_tag_add(
+    line_user_id: str,
+    tag_name: str = Form(...),
+    color: str = Form("secondary"),
+    db: Session = Depends(get_db),
+    user: SystemUser = Depends(current_user_dep),
+):
+    tag_name = tag_name.strip()
+    if tag_name and color in TAG_COLORS:
+        exists = db.query(UserTag).filter(
+            UserTag.line_user_id == line_user_id,
+            UserTag.tag_name == tag_name,
+        ).first()
+        if not exists:
+            db.add(UserTag(line_user_id=line_user_id, tag_name=tag_name, color=color, created_by=user.display_name))
+            db.commit()
+    from_page = db.query(UserTag).filter(UserTag.line_user_id == line_user_id).first()
+    return RedirectResponse(url=f"/dashboard/history?line_user_id={line_user_id}&tag_updated=1", status_code=302)
+
+
+@router.post("/dashboard/user/{line_user_id}/tag/remove/{tag_id}")
+def user_tag_remove(
+    line_user_id: str,
+    tag_id: int,
+    db: Session = Depends(get_db),
+    user: SystemUser = Depends(current_user_dep),
+):
+    tag = db.query(UserTag).filter(UserTag.id == tag_id, UserTag.line_user_id == line_user_id).first()
+    if tag:
+        db.delete(tag)
+        db.commit()
+    return RedirectResponse(url=f"/dashboard/history?line_user_id={line_user_id}&tag_updated=1", status_code=302)
+
+
+@router.post("/dashboard/user/{line_user_id}/note")
+def user_note_update(
+    line_user_id: str,
+    note: str = Form(""),
+    db: Session = Depends(get_db),
+    user: SystemUser = Depends(current_user_dep),
+):
+    lu = db.query(LineUser).filter(LineUser.line_user_id == line_user_id).first()
+    if lu:
+        lu.note = note.strip() or None
+        db.commit()
+    return RedirectResponse(url=f"/dashboard/history?line_user_id={line_user_id}&note_saved=1", status_code=302)
 
 
 # ── 已訓練 Q&A ────────────────────────────────────────────────

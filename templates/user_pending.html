@@ -45,7 +45,27 @@
         {% for item in items %}
         <tr class="{% if item.status == 'pending' %}table-warning{% endif %}">
           <td>{{ item.id }}</td>
-          <td><small>{{ item.display_name or item.line_user_id[:8] + '…' }}</small></td>
+          <td>
+            <small class="fw-bold">{{ item.display_name or item.line_user_id[:8] + '…' }}</small>
+            {% set utags = user_tags_map.get(item.line_user_id, []) %}
+            {% if utags %}
+            <div class="d-flex flex-wrap gap-1 mt-1">
+              {% for t in utags %}
+              <span class="badge bg-{{ t.color }}" style="font-size:0.65rem">{{ t.tag_name }}</span>
+              {% endfor %}
+            </div>
+            {% endif %}
+            {% set unote = user_notes_map.get(item.line_user_id) %}
+            {% if unote %}
+            <div class="text-warning mt-1" style="font-size:0.7rem" title="{{ unote }}">
+              <i class="bi bi-sticky-fill"></i> {{ unote[:20] }}{% if unote|length > 20 %}…{% endif %}
+            </div>
+            {% endif %}
+            <a href="/dashboard/history?line_user_id={{ item.line_user_id }}&anchor={{ item.created_at.strftime('%Y-%m-%dT%H:%M:%S') }}"
+               class="text-muted text-decoration-none mt-1 d-block" style="font-size:0.7rem">
+              <i class="bi bi-chat-text"></i> 查看對話
+            </a>
+          </td>
           <td>{{ item.question }}</td>
           <td><small>{{ item.created_at.strftime('%m/%d %H:%M') }}</small></td>
           <td>

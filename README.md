@@ -158,6 +158,19 @@ Database: linebot
 | done_at | DATETIME | 處理完成時間 |
 | created_at | DATETIME | 建立時間 |
 
+### `user_tags` — 用戶標籤
+
+| 欄位 | 類型 | 說明 |
+|------|------|------|
+| id | INT | 主鍵 |
+| line_user_id | VARCHAR(64) | LINE 用戶 ID |
+| tag_name | VARCHAR(64) | 標籤名稱 |
+| color | VARCHAR(16) | Bootstrap 顏色類別（primary/danger/warning/success/info/secondary/dark） |
+| created_by | VARCHAR(128) | 建立者（小編帳號） |
+| created_at | DATETIME | 建立時間 |
+
+> `line_users.note` 欄位（TEXT）儲存用戶備註，對所有小編共享可見。
+
 ### `system_users` — 系統使用者
 
 | 欄位 | 類型 | 說明 |
@@ -229,9 +242,9 @@ Database: linebot
 | 頁面 | 路徑 | 功能 |
 |------|------|------|
 | 儀表板 | `/dashboard` | 訓練進度、待回覆、待辦事項數量概覽 |
-| 待回覆清單 | `/dashboard/pending` | 查看待人工回覆訊息、透過 LINE 直接回覆或建立待辦事項 |
+| 待回覆清單 | `/dashboard/pending` | 查看待人工回覆訊息、透過 LINE 直接回覆或建立待辦事項、顯示用戶標籤/備註、點「查看對話」直接跳至該則訊息 |
 | 待辦事項 | `/dashboard/todo` | 管理待辦清單，含逾期/緊急/即將到期三層警示 |
-| 聊天記錄 | `/dashboard/history` | 查看與用戶的完整對話（Bot回覆/小編回覆以不同顏色區分） |
+| 聊天記錄 | `/dashboard/history` | 查看與用戶的完整對話（Bot回覆/小編回覆以不同顏色區分）、貼標籤、備註 |
 | Q&A 訓練 | `/dashboard/qa` | 編輯/刪除 Q&A、點擊「訓練建檔」完成訓練 |
 | 已訓練 Q&A | `/dashboard/trained` | 查看/刪除已建檔內容、匯出 CSV / XLS |
 | 建立 Q&A | `/dashboard/create-qa` | 手動新增或批次 CSV 匯入（含 is_active/is_trained 欄位）、下載 CSV 範本 |
@@ -247,6 +260,18 @@ Database: linebot
 | 行政手續 | 各類行政申辦手續 |
 | 款項確認 | 費用及款項相關確認 |
 | 其他 | 自訂分類（可填入任意名稱） |
+
+### 用戶標籤與備註
+
+小編可在聊天記錄頁面對 LINE 用戶貼標籤與新增備註，供所有承辦人員共享：
+
+| 功能 | 說明 |
+|------|------|
+| 貼標籤 | 可自訂標籤名稱並選擇顏色（紅/橘/綠/藍/青/灰/黑） |
+| 移除標籤 | 點標籤旁 `×` 立即移除 |
+| 用戶備註 | 自由填寫備註（特殊狀況、注意事項），所有小編可見 |
+| 標籤顯示 | 聊天記錄用戶清單、待回覆清單均顯示標籤與備註摘要 |
+| 查看對話 | 待回覆清單點「查看對話」，自動跳轉並捲動至該則訊息（黃色高亮動畫） |
 
 ### 待辦事項警示規則
 
@@ -571,4 +596,4 @@ TUNNEL_URL=https://xxx.trycloudflare.com
 
 ---
 
-*文件最後更新：2026-05-12（新增 Q&A 刪除功能、Q&A 匯出/匯入含 is_active/is_trained 欄位、CSV 範本下載路由修正、管理後台 Q&A 匯出 CSV/Excel）*
+*文件最後更新：2026-05-12（新增用戶標籤系統、用戶備註、待回覆清單顯示標籤/備註、查看對話跳轉定位功能）*

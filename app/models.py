@@ -11,8 +11,20 @@ class LineUser(Base):
     display_name = Column(String(255), nullable=True)
     picture_url = Column(String(512), nullable=True)
     status = Column(Enum("active", "blocked"), default="active")
+    note = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class UserTag(Base):
+    __tablename__ = "user_tags"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    line_user_id = Column(String(64), nullable=False, index=True)
+    tag_name = Column(String(64), nullable=False)
+    color = Column(String(16), nullable=False, default="secondary")
+    created_by = Column(String(128), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
 
 
 class MessageLog(Base):

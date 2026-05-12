@@ -3,21 +3,38 @@
 {% block content %}
 <h4 class="mb-3"><i class="bi bi-chat-square-text"></i> 聊天記錄</h4>
 
-<div class="row g-3" style="height:calc(100vh - 140px)">
+{% if request.query_params.get('note_saved') %}
+<div class="alert alert-success alert-dismissible fade show py-2">
+  <i class="bi bi-check-circle"></i> 備註已儲存。
+  <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+{% endif %}
+
+<div class="row g-3" style="height:calc(100vh - 155px)">
 
   <!-- 左側：用戶清單 -->
   <div class="col-3">
     <div class="card h-100">
       <div class="card-header fw-bold small">用戶列表</div>
-      <div class="list-group list-group-flush overflow-auto" style="max-height:calc(100vh - 200px)">
+      <div class="list-group list-group-flush overflow-auto" style="max-height:calc(100vh - 215px)">
         {% for u in users %}
         <a href="/dashboard/history?line_user_id={{ u.line_user_id }}"
            class="list-group-item list-group-item-action py-2 {% if u.line_user_id == selected_uid %}active{% endif %}">
           <div class="d-flex align-items-center gap-2">
             <i class="bi bi-person-circle fs-5"></i>
-            <div>
-              <div class="small fw-bold">{{ u.display_name or '未知用戶' }}</div>
-              <div class="text-muted" style="font-size:0.7rem">{{ u.line_user_id[:16] }}…</div>
+            <div class="flex-grow-1 overflow-hidden">
+              <div class="small fw-bold text-truncate">{{ u.display_name or '未知用戶' }}</div>
+              {% set utags = all_user_tags.get(u.line_user_id, []) %}
+              {% if utags %}
+              <div class="d-flex flex-wrap gap-1 mt-1">
+                {% for t in utags[:2] %}
+                <span class="badge bg-{{ t.color }}" style="font-size:0.6rem">{{ t.tag_name }}</span>
+                {% endfor %}
+                {% if utags|length > 2 %}
+                <span class="badge bg-light text-dark" style="font-size:0.6rem">+{{ utags|length - 2 }}</span>
+                {% endif %}
+              </div>
+              {% endif %}
             </div>
           </div>
         </a>
@@ -28,24 +45,49 @@
     </div>
   </div>
 
-  <!-- 右側：聊天視窗 -->
-  <div class="col-9 d-flex flex-column">
+  <!-- 右側：聊天視窗 + 用戶資訊 -->
+  <div class="col-9 d-flex flex-column" style="height:100%">
     {% if selected_user %}
-    <!-- 聊天標題 -->
+
+    <!-- 用戶資訊列 -->
     <div class="card mb-2">
-      <div class="card-body py-2 d-flex align-items-center gap-2">
-        <i class="bi bi-person-circle fs-4 text-muted"></i>
-        <div>
-          <div class="fw-bold">{{ selected_user.display_name or '未知用戶' }}</div>
-          <div class="text-muted small">{{ selected_user.line_user_id }}</div>
+      <div class="card-body py-2">
+        <div class="d-flex align-items-center gap-2">
+          <i class="bi bi-person-circle fs-4 text-muted"></i>
+          <div class="flex-grow-1">
+            <div class="fw-bold d-flex align-items-center gap-2">
+              {{ selected_user.display_name or '未知用戶' }}
+              <!-- 標籤顯示 -->
+              {% for t in tags %}
+              <span class="badge bg-{{ t.color }}">
+                {{ t.tag_name }}
+                <a href="#" onclick="removeTag({{ t.id }},'{{ selected_user.line_user_id }}')" class="text-white ms-1 text-decoration-none">×</a>
+              </span>
+              {% endfor %}
+              <button class="btn btn-sm btn-outline-secondary py-0 px-1" style="font-size:0.75rem"
+                      data-bs-toggle="modal" data-bs-target="#tagModal">
+                <i class="bi bi-tag"></i> 貼標籤
+              </button>
+            </div>
+            <div class="text-muted small">{{ selected_user.line_user_id }}</div>
+          </div>
+          <button class="btn btn-sm btn-outline-secondary py-0"
+                  data-bs-toggle="modal" data-bs-target="#noteModal">
+            <i class="bi bi-sticky"></i>
+            {% if selected_user.note %}備註{% else %}新增備註{% endif %}
+          </button>
         </div>
+        {% if selected_user.note %}
+        <div class="mt-1 p-2 bg-warning bg-opacity-10 rounded small text-muted border-start border-warning border-3">
+          <i class="bi bi-sticky-fill text-warning"></i> {{ selected_user.note }}
+        </div>
+        {% endif %}
       </div>
     </div>
 
     <!-- 對話氣泡區 -->
-    <div class="card flex-grow-1">
-      <div class="card-body overflow-auto p-3" style="max-height:calc(100vh - 280px); background:#f0f2f5"
-           id="chatBox">
+    <div class="card flex-grow-1 overflow-hidden">
+      <div class="card-body overflow-auto p-3" style="background:#f0f2f5" id="chatBox">
         {% if messages %}
           {% set ns = namespace(last_date="") %}
           {% for msg in messages %}
@@ -57,9 +99,10 @@
             {% set ns.last_date = msg_date %}
             {% endif %}
 
+            {% set is_anchor = (anchor_msg_id == msg.id) %}
             {% if msg.direction == 'incoming' %}
             <!-- 用戶訊息（左側） -->
-            <div class="d-flex align-items-end gap-2 mb-2">
+            <div id="msg-{{ msg.id }}" class="d-flex align-items-end gap-2 mb-2{% if is_anchor %} anchor-highlight{% endif %}">
               <i class="bi bi-person-circle fs-4 text-muted flex-shrink-0"></i>
               <div>
                 <div class="small text-muted mb-1">{{ selected_user.display_name or '用戶' }}</div>
@@ -67,38 +110,32 @@
                      style="background:#fff; max-width:320px; word-break:break-word">
                   {{ msg.content }}
                 </div>
-                <div class="text-muted mt-1" style="font-size:0.7rem">
-                  {{ msg.created_at.strftime('%H:%M') }}
-                </div>
+                <div class="text-muted mt-1" style="font-size:0.7rem">{{ msg.created_at.strftime('%H:%M') }}</div>
               </div>
             </div>
             {% elif msg.message_type == 'staff' %}
             <!-- 小編人工回覆（右側，藍色） -->
-            <div class="d-flex align-items-end justify-content-end gap-2 mb-2">
+            <div id="msg-{{ msg.id }}" class="d-flex align-items-end justify-content-end gap-2 mb-2{% if is_anchor %} anchor-highlight{% endif %}">
               <div class="text-end">
                 <div class="small text-muted mb-1">小編回覆</div>
                 <div class="rounded-3 px-3 py-2 d-inline-block shadow-sm"
                      style="background:#0d6efd; color:#fff; max-width:320px; word-break:break-word">
                   {{ msg.content }}
                 </div>
-                <div class="text-muted mt-1" style="font-size:0.7rem">
-                  {{ msg.created_at.strftime('%H:%M') }}
-                </div>
+                <div class="text-muted mt-1" style="font-size:0.7rem">{{ msg.created_at.strftime('%H:%M') }}</div>
               </div>
               <i class="bi bi-person-badge fs-4 flex-shrink-0 text-primary"></i>
             </div>
             {% else %}
             <!-- Bot 自動回覆（右側，綠色） -->
-            <div class="d-flex align-items-end justify-content-end gap-2 mb-2">
+            <div id="msg-{{ msg.id }}" class="d-flex align-items-end justify-content-end gap-2 mb-2{% if is_anchor %} anchor-highlight{% endif %}">
               <div class="text-end">
                 <div class="small text-muted mb-1">Bot</div>
                 <div class="rounded-3 px-3 py-2 d-inline-block shadow-sm"
                      style="background:#06C755; color:#fff; max-width:320px; word-break:break-word">
                   {{ msg.content }}
                 </div>
-                <div class="text-muted mt-1" style="font-size:0.7rem">
-                  {{ msg.created_at.strftime('%H:%M') }}
-                </div>
+                <div class="text-muted mt-1" style="font-size:0.7rem">{{ msg.created_at.strftime('%H:%M') }}</div>
               </div>
               <i class="bi bi-robot fs-4 flex-shrink-0" style="color:#06C755"></i>
             </div>
@@ -112,6 +149,84 @@
         {% endif %}
       </div>
     </div>
+
+    <!-- 貼標籤 Modal -->
+    <div class="modal fade" id="tagModal" tabindex="-1">
+      <div class="modal-dialog modal-sm">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h6 class="modal-title"><i class="bi bi-tag"></i> 貼標籤</h6>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <form method="post" action="/dashboard/user/{{ selected_user.line_user_id }}/tag/add">
+            <div class="modal-body">
+              <!-- 現有標籤 -->
+              {% if tags %}
+              <div class="mb-3">
+                <div class="small fw-bold text-muted mb-1">目前標籤</div>
+                <div class="d-flex flex-wrap gap-1">
+                  {% for t in tags %}
+                  <span class="badge bg-{{ t.color }}">
+                    {{ t.tag_name }}
+                    <a href="#" onclick="removeTag({{ t.id }},'{{ selected_user.line_user_id }}')" class="text-white ms-1 text-decoration-none">×</a>
+                  </span>
+                  {% endfor %}
+                </div>
+              </div>
+              {% endif %}
+              <!-- 新增標籤 -->
+              <div class="mb-2">
+                <label class="form-label small fw-bold">標籤名稱</label>
+                <input type="text" name="tag_name" class="form-control form-control-sm"
+                       placeholder="例：VIP、待追蹤、已確認" required maxlength="20">
+              </div>
+              <div class="mb-2">
+                <label class="form-label small fw-bold">顏色</label>
+                <div class="d-flex gap-2 flex-wrap">
+                  {% for c in tag_colors %}
+                  <label class="d-flex align-items-center gap-1">
+                    <input type="radio" name="color" value="{{ c }}" {% if c == 'secondary' %}checked{% endif %}>
+                    <span class="badge bg-{{ c }}">{{ tag_color_labels[c] }}</span>
+                  </label>
+                  {% endfor %}
+                </div>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">關閉</button>
+              <button type="submit" class="btn btn-sm btn-primary"><i class="bi bi-plus"></i> 新增標籤</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- 備註 Modal -->
+    <div class="modal fade" id="noteModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h6 class="modal-title"><i class="bi bi-sticky"></i> 用戶備註 — {{ selected_user.display_name }}</h6>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <form method="post" action="/dashboard/user/{{ selected_user.line_user_id }}/note">
+            <div class="modal-body">
+              <div class="text-muted small mb-2">備註內容對所有小編可見，可記錄特殊狀況、注意事項等。</div>
+              <textarea name="note" class="form-control" rows="5"
+                        placeholder="輸入備註內容（留空即清除備註）...">{{ selected_user.note or '' }}</textarea>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">取消</button>
+              <button type="submit" class="btn btn-sm btn-warning"><i class="bi bi-save"></i> 儲存備註</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- 移除標籤表單（隱藏） -->
+    <form id="removeTagForm" method="post" style="display:none"></form>
+
     {% else %}
     <div class="card flex-grow-1">
       <div class="card-body d-flex align-items-center justify-content-center text-muted">
@@ -125,9 +240,41 @@
   </div>
 </div>
 
+<style>
+  .anchor-highlight {
+    border-radius: 8px;
+    animation: flashHighlight 2.5s ease-out forwards;
+  }
+  @keyframes flashHighlight {
+    0%   { background: rgba(255, 193, 7, 0.5); }
+    60%  { background: rgba(255, 193, 7, 0.3); }
+    100% { background: transparent; }
+  }
+</style>
 <script>
-  // 自動捲到最下方
+  const anchorId = {{ anchor_msg_id | tojson }};
   const box = document.getElementById('chatBox');
-  if (box) box.scrollTop = box.scrollHeight;
+  if (box) {
+    if (anchorId) {
+      const target = document.getElementById('msg-' + anchorId);
+      if (target) {
+        // 手動計算在 overflow 容器內的捲動位置
+        const boxRect = box.getBoundingClientRect();
+        const targetRect = target.getBoundingClientRect();
+        box.scrollTop = box.scrollTop + (targetRect.top - boxRect.top) - (box.clientHeight / 2) + (target.clientHeight / 2);
+      } else {
+        box.scrollTop = box.scrollHeight;
+      }
+    } else {
+      box.scrollTop = box.scrollHeight;
+    }
+  }
+
+  function removeTag(tagId, userId) {
+    if (!confirm('移除此標籤？')) return;
+    const form = document.getElementById('removeTagForm');
+    form.action = '/dashboard/user/' + userId + '/tag/remove/' + tagId;
+    form.submit();
+  }
 </script>
 {% endblock %}
