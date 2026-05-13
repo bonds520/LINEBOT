@@ -85,6 +85,29 @@ class TodoItem(Base):
     created_at = Column(DateTime, server_default=func.now())
 
 
+class MessageQuote(Base):
+    __tablename__ = "message_quotes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    message_log_id = Column(Integer, nullable=False, index=True)
+    quote_sender = Column(String(255), nullable=True)
+    quote_preview = Column(Text, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class PresetMessage(Base):
+    __tablename__ = "preset_messages"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    title = Column(String(64), nullable=False)
+    content = Column(Text, nullable=False)
+    category = Column(String(64), nullable=True, default="一般")
+    sort_order = Column(Integer, default=0)
+    created_by = Column(String(128), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class PendingQuestion(Base):
     __tablename__ = "pending_questions"
 

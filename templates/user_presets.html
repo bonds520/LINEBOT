@@ -1,0 +1,188 @@
+{% extends "user_base.html" %}
+{% set page = "presets" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4><i class="bi bi-card-text"></i> 預設訊息管理</h4>
+  <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addModal">
+    <i class="bi bi-plus-lg"></i> 新增預設訊息
+  </button>
+</div>
+
+{% if request.query_params.get('created') %}
+<div class="alert alert-success alert-dismissible fade show">
+  <i class="bi bi-check-circle"></i> 預設訊息已新增！
+  <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+{% endif %}
+{% if request.query_params.get('updated') %}
+<div class="alert alert-success alert-dismissible fade show">
+  <i class="bi bi-check-circle"></i> 預設訊息已更新！
+  <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+{% endif %}
+{% if request.query_params.get('deleted') %}
+<div class="alert alert-warning alert-dismissible fade show">
+  <i class="bi bi-trash"></i> 預設訊息已刪除。
+  <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead class="table-light">
+        <tr>
+          <th style="width:50px">排序</th>
+          <th style="width:140px">標題</th>
+          <th style="width:80px">分類</th>
+          <th>訊息內容</th>
+          <th style="width:100px">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in presets %}
+        <tr>
+          <td class="text-muted small">{{ p.sort_order }}</td>
+          <td class="fw-bold small">{{ p.title }}</td>
+          <td><span class="badge bg-light text-dark border">{{ p.category or '一般' }}</span></td>
+          <td class="small text-muted" style="white-space:pre-line">{{ p.content[:100] }}{% if p.content|length > 100 %}…{% endif %}</td>
+          <td>
+            <div class="d-flex gap-1">
+              <button class="btn btn-sm btn-outline-primary py-0 px-2"
+                      data-bs-toggle="modal" data-bs-target="#editModal{{ p.id }}">
+                <i class="bi bi-pencil"></i>
+              </button>
+              <button class="btn btn-sm btn-outline-danger py-0 px-2"
+                      data-bs-toggle="modal" data-bs-target="#delModal{{ p.id }}">
+                <i class="bi bi-trash"></i>
+              </button>
+            </div>
+          </td>
+        </tr>
+
+        <!-- 編輯 Modal -->
+        <div class="modal fade" id="editModal{{ p.id }}" tabindex="-1">
+          <div class="modal-dialog">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h6 class="modal-title"><i class="bi bi-pencil"></i> 編輯預設訊息</h6>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+              </div>
+              <form method="post" action="/dashboard/presets/{{ p.id }}/update">
+                <div class="modal-body">
+                  <div class="row g-2">
+                    <div class="col-8">
+                      <label class="form-label small fw-bold">標題 <span class="text-danger">*</span></label>
+                      <input type="text" name="title" class="form-control form-control-sm"
+                             value="{{ p.title }}" required maxlength="64">
+                    </div>
+                    <div class="col-4">
+                      <label class="form-label small fw-bold">排序</label>
+                      <input type="number" name="sort_order" class="form-control form-control-sm"
+                             value="{{ p.sort_order }}" min="0">
+                    </div>
+                    <div class="col-12">
+                      <label class="form-label small fw-bold">分類</label>
+                      <input type="text" name="category" class="form-control form-control-sm"
+                             value="{{ p.category or '一般' }}" maxlength="64"
+                             list="cat-list-{{ p.id }}">
+                      <datalist id="cat-list-{{ p.id }}">
+                        {% for c in categories %}<option value="{{ c }}">{% endfor %}
+                      </datalist>
+                    </div>
+                    <div class="col-12">
+                      <label class="form-label small fw-bold">訊息內容 <span class="text-danger">*</span></label>
+                      <textarea name="content" class="form-control form-control-sm" rows="5"
+                                required>{{ p.content }}</textarea>
+                    </div>
+                  </div>
+                </div>
+                <div class="modal-footer">
+                  <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">取消</button>
+                  <button type="submit" class="btn btn-sm btn-primary"><i class="bi bi-save"></i> 儲存</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+
+        <!-- 刪除確認 Modal -->
+        <div class="modal fade" id="delModal{{ p.id }}" tabindex="-1">
+          <div class="modal-dialog modal-sm">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h6 class="modal-title text-danger"><i class="bi bi-trash"></i> 確認刪除</h6>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+              </div>
+              <div class="modal-body small">
+                確定要刪除「<strong>{{ p.title }}</strong>」嗎？此操作無法復原。
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">取消</button>
+                <form method="post" action="/dashboard/presets/{{ p.id }}/delete" class="d-inline">
+                  <button type="submit" class="btn btn-sm btn-danger"><i class="bi bi-trash"></i> 刪除</button>
+                </form>
+              </div>
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+
+        {% if not presets %}
+        <tr>
+          <td colspan="5" class="text-center py-5 text-muted">
+            <i class="bi bi-card-text fs-1 d-block mb-2"></i>
+            尚無預設訊息，點右上角「新增預設訊息」開始建立。
+          </td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 新增 Modal -->
+<div class="modal fade" id="addModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h6 class="modal-title"><i class="bi bi-plus-lg"></i> 新增預設訊息</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form method="post" action="/dashboard/presets/create">
+        <div class="modal-body">
+          <div class="row g-2">
+            <div class="col-8">
+              <label class="form-label small fw-bold">標題 <span class="text-danger">*</span></label>
+              <input type="text" name="title" class="form-control form-control-sm"
+                     placeholder="例：歡迎訊息、報名確認…" required maxlength="64">
+            </div>
+            <div class="col-4">
+              <label class="form-label small fw-bold">排序</label>
+              <input type="number" name="sort_order" class="form-control form-control-sm"
+                     value="0" min="0">
+            </div>
+            <div class="col-12">
+              <label class="form-label small fw-bold">分類</label>
+              <input type="text" name="category" class="form-control form-control-sm"
+                     value="一般" maxlength="64" list="cat-list-new">
+              <datalist id="cat-list-new">
+                {% for c in categories %}<option value="{{ c }}">{% endfor %}
+              </datalist>
+            </div>
+            <div class="col-12">
+              <label class="form-label small fw-bold">訊息內容 <span class="text-danger">*</span></label>
+              <textarea name="content" class="form-control form-control-sm" rows="5"
+                        placeholder="輸入完整的預設訊息內容..." required></textarea>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">取消</button>
+          <button type="submit" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg"></i> 新增</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

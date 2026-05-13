@@ -11,6 +11,18 @@
   <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
 </div>
 {% endif %}
+{% if request.query_params.get('replied') %}
+<div class="alert alert-success alert-dismissible fade show py-2">
+  <i class="bi bi-send-check"></i> 訊息已透過 LINE 送出！
+  <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+{% endif %}
+{% if request.query_params.get('error') %}
+<div class="alert alert-danger alert-dismissible fade show py-2">
+  <i class="bi bi-exclamation-triangle"></i> 傳送失敗：{{ request.query_params.get('error') }}
+  <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+{% endif %}
 
 <!-- 搜尋列 -->
 <form method="get" action="/dashboard/history" class="card mb-3">
@@ -219,16 +231,33 @@
                      style="background:#fff; max-width:320px; word-break:break-word">
                   {{ msg.content }}
                 </div>
-                <div class="text-muted mt-1" style="font-size:0.7rem">{{ msg.created_at.strftime('%H:%M') }}</div>
+                <div class="d-flex align-items-center gap-2 mt-1">
+                  <span class="text-muted" style="font-size:0.7rem">{{ msg.created_at.strftime('%H:%M') }}</span>
+                  <button class="btn btn-link btn-sm py-0 px-0 text-muted"
+                          style="font-size:0.7rem; text-decoration:none"
+                          onclick="quoteReply(msgData[{{ msg.id }}])">
+                    <i class="bi bi-reply"></i> 回覆
+                  </button>
+                </div>
               </div>
             </div>
             {% elif msg.message_type == 'staff' %}
             <!-- 小編人工回覆（右側，藍色） -->
+            {% set quote = quote_map.get(msg.id) %}
             <div id="msg-{{ msg.id }}" class="d-flex align-items-end justify-content-end gap-2 mb-2">
               <div class="text-end">
                 <div class="small text-muted mb-1">小編回覆</div>
-                <div class="rounded-3 px-3 py-2 d-inline-block shadow-sm"
+                <div class="rounded-3 px-3 py-2 d-inline-block shadow-sm text-start"
                      style="background:#0d6efd; color:#fff; max-width:320px; word-break:break-word">
+                  {% if quote %}
+                  <div class="mb-2 px-2 py-1 rounded"
+                       style="background:rgba(255,255,255,0.22); border-left:3px solid rgba(255,255,255,0.75)">
+                    {% if quote.quote_sender %}
+                    <div class="fw-bold" style="font-size:0.72rem">{{ quote.quote_sender }}</div>
+                    {% endif %}
+                    <div style="font-size:0.8rem; opacity:0.92">{{ quote.quote_preview }}</div>
+                  </div>
+                  {% endif %}
                   {{ msg.content }}
                 </div>
                 <div class="text-muted mt-1" style="font-size:0.7rem">{{ msg.created_at.strftime('%H:%M') }}</div>
@@ -336,6 +365,41 @@
     <!-- 移除標籤表單（隱藏） -->
     <form id="removeTagForm" method="post" style="display:none"></form>
 
+    <!-- 回覆輸入區 -->
+    <div class="card mt-2 flex-shrink-0" id="replyCard">
+      <div class="card-body py-2 px-3">
+        <!-- 引用提示列 -->
+        <div id="quoteBar" class="mb-2 px-2 py-1 rounded-end small text-muted"
+             style="border-left:3px solid #ffc107; background:rgba(255,193,7,0.08); display:none; justify-content:space-between; align-items:center">
+          <span><i class="bi bi-reply-fill text-warning me-1"></i><span id="quoteText"></span></span>
+          <button type="button" class="btn-close ms-2" style="font-size:0.55rem" onclick="clearQuote()"></button>
+        </div>
+        <form method="post" action="/dashboard/history/reply" id="historyReplyForm">
+          <input type="hidden" name="line_user_id" value="{{ selected_user.line_user_id }}">
+          <input type="hidden" name="quote_name" id="quoteHiddenName">
+          <input type="hidden" name="quote_text" id="quoteHiddenText">
+          <div class="d-flex gap-2 align-items-end">
+            <div class="flex-grow-1">
+              <textarea class="form-control form-control-sm" name="message" id="historyReplyText"
+                        rows="2" placeholder="輸入訊息，透過 LINE 直接傳送給 {{ selected_user.display_name or '用戶' }}..."
+                        required></textarea>
+            </div>
+            <div class="d-flex flex-column gap-1 flex-shrink-0">
+              {% if presets %}
+              <button type="button" class="btn btn-sm btn-outline-secondary"
+                      data-bs-toggle="modal" data-bs-target="#presetPickerModal">
+                <i class="bi bi-card-text"></i> 預設訊息
+              </button>
+              {% endif %}
+              <button type="submit" class="btn btn-sm btn-success">
+                <i class="bi bi-send"></i> 送出
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+
     {% else %}
     <div class="card flex-grow-1">
       <div class="card-body d-flex align-items-center justify-content-center text-muted">
@@ -350,7 +414,44 @@
 </div>
 {% endif %}
 
+<!-- 預設訊息選取 Modal -->
+<div class="modal fade" id="presetPickerModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header py-2">
+        <h6 class="modal-title"><i class="bi bi-card-text"></i> 選擇預設訊息</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        {% if presets %}
+        <div class="row g-2">
+          {% for p in presets %}
+          <div class="col-6">
+            <div class="card h-100 preset-card" role="button"
+                 onclick="applyHistoryPreset(presetData[{{ p.id }}])"
+                 style="cursor:pointer; transition:border-color .15s">
+              <div class="card-body py-2 px-3">
+                <div class="fw-bold small">{{ p.title }}</div>
+                <span class="badge bg-light text-dark border" style="font-size:0.65rem">{{ p.category or '一般' }}</span>
+                <div class="text-muted small mt-1" style="white-space:pre-line; font-size:0.8rem">{{ p.content[:80] }}{% if p.content|length > 80 %}…{% endif %}</div>
+              </div>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div class="text-center text-muted py-4">
+          <i class="bi bi-card-text fs-2 d-block mb-2"></i>
+          尚無預設訊息，<a href="/dashboard/presets">前往建立</a>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
 <style>
+  .preset-card:hover { border-color: #0d6efd !important; }
   .anchor-highlight {
     border-radius: 8px;
     animation: flashHighlight 2.5s ease-out forwards;
@@ -362,6 +463,16 @@
   }
 </style>
 <script>
+  // 預設訊息內容（key = preset.id）
+  const presetData = {
+    {% for p in presets %}{{ p.id }}: {{ p.content | tojson }},{% endfor %}
+  };
+  // 訊息內容（key = msg.id，僅 incoming）
+  const msgData = {
+    {% for msg in messages %}{% if msg.direction == 'incoming' %}{{ msg.id }}: {{ msg.content | tojson }},{% endif %}{% endfor %}
+  };
+  const selectedUserName = {{ (selected_user.display_name if selected_user else '用戶') | tojson }};
+
   const anchorId = {{ anchor_msg_id | tojson }};
   const box = document.getElementById('chatBox');
 
@@ -369,17 +480,9 @@
     if (!anchorId || !box) return false;
     const target = document.getElementById('msg-' + anchorId);
     if (!target) return false;
-
-    // 用文件絕對座標計算 target 在 box 內的偏移
-    // getBoundingClientRect 是視窗相對座標，加上 scrollY 得文件絕對座標
     const targetAbsTop = target.getBoundingClientRect().top + window.scrollY;
     const boxAbsTop    = box.getBoundingClientRect().top   + window.scrollY;
-    const targetOffsetInBox = targetAbsTop - boxAbsTop + box.scrollTop;
-
-    // 捲動讓目標置中顯示
-    box.scrollTop = targetOffsetInBox - box.clientHeight / 2 + target.offsetHeight / 2;
-
-    // 捲動後再觸發動畫，確保用戶看得到
+    box.scrollTop = (targetAbsTop - boxAbsTop + box.scrollTop) - box.clientHeight / 2 + target.offsetHeight / 2;
     setTimeout(() => {
       target.classList.add('anchor-highlight');
       setTimeout(() => target.classList.remove('anchor-highlight'), 2600);
@@ -388,11 +491,8 @@
   }
 
   if (box) {
-    // 等 DOM 完全渲染後再執行
     requestAnimationFrame(() => {
-      if (!scrollToAnchor()) {
-        box.scrollTop = box.scrollHeight;
-      }
+      if (!scrollToAnchor()) box.scrollTop = box.scrollHeight;
     });
   }
 
@@ -401,6 +501,41 @@
     const form = document.getElementById('removeTagForm');
     form.action = '/dashboard/user/' + userId + '/tag/remove/' + tagId;
     form.submit();
+  }
+
+  // 套用預設訊息後填入 textarea，並關閉 Modal（點 .btn-close，不依賴 Bootstrap JS API）
+  function applyHistoryPreset(content) {
+    const ta = document.getElementById('historyReplyText');
+    if (ta) { ta.value = content; ta.focus(); }
+    const closeBtn = document.querySelector('#presetPickerModal .btn-close');
+    if (closeBtn) closeBtn.click();
+  }
+
+  // 點訊息旁「回覆」按鈕 → 顯示引用列並聚焦輸入區，同時記錄引用資訊
+  function quoteReply(content) {
+    const bar    = document.getElementById('quoteBar');
+    const qtext  = document.getElementById('quoteText');
+    const ta     = document.getElementById('historyReplyText');
+    const card   = document.getElementById('replyCard');
+    const hName  = document.getElementById('quoteHiddenName');
+    const hText  = document.getElementById('quoteHiddenText');
+    if (!bar || !qtext || !ta) return;
+    const preview = content.length > 60 ? content.substring(0, 60) + '…' : content;
+    qtext.textContent = preview;
+    bar.style.display = 'flex';
+    if (hName) hName.value = selectedUserName;
+    if (hText) hText.value = content;
+    if (card) card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    setTimeout(() => ta.focus(), 300);
+  }
+
+  function clearQuote() {
+    const bar   = document.getElementById('quoteBar');
+    const hName = document.getElementById('quoteHiddenName');
+    const hText = document.getElementById('quoteHiddenText');
+    if (bar)   bar.style.display = 'none';
+    if (hName) hName.value = '';
+    if (hText) hText.value = '';
   }
 </script>
 {% endblock %}

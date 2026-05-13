@@ -86,12 +86,21 @@ def handle_text_message(event, db: Session):
     log_message(db, user_id, "outgoing", "text", reply_text)
 
 
-def push_message(line_user_id: str, text: str, db: Session, msg_type: str = "text"):
+def push_message(line_user_id: str, text: str, db: Session, msg_type: str = "text", log_content: str = None) -> MessageLog:
     messaging_api = get_messaging_api()
     messaging_api.push_message(
         PushMessageRequest(to=line_user_id, messages=[TextMessage(text=text)])
     )
-    log_message(db, line_user_id, "outgoing", msg_type, text)
+    log = MessageLog(
+        line_user_id=line_user_id,
+        direction="outgoing",
+        message_type=msg_type,
+        content=log_content if log_content is not None else text,
+    )
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+    return log
 
 
 def handle_follow_event(event, db: Session):

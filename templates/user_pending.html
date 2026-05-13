@@ -115,7 +115,18 @@
                   <div class="mb-2 p-2 bg-light rounded small text-muted">
                     <i class="bi bi-chat-left-quote"></i> {{ item.question }}
                   </div>
-                  <textarea class="form-control" name="message" rows="4"
+                  {% if presets %}
+                  <div class="mb-2">
+                    <select class="form-select form-select-sm"
+                            onchange="applyPreset(this, 'msg_{{ item.id }}')">
+                      <option value="">— 套用預設訊息 —</option>
+                      {% for p in presets %}
+                      <option value="{{ p.content }}">【{{ p.category or '一般' }}】{{ p.title }}</option>
+                      {% endfor %}
+                    </select>
+                  </div>
+                  {% endif %}
+                  <textarea class="form-control" name="message" id="msg_{{ item.id }}" rows="4"
                             placeholder="輸入要傳送給用戶的訊息..." required></textarea>
                   <div class="form-text"><i class="bi bi-info-circle"></i> 訊息將透過 LINE 直接發送，並自動標記為已處理。</div>
                 </div>
@@ -220,4 +231,13 @@
     </table>
   </div>
 </div>
+<script>
+function applyPreset(sel, textareaId) {
+  if (sel.value) {
+    var ta = document.getElementById(textareaId);
+    if (ta) ta.value = sel.value;
+    sel.selectedIndex = 0;
+  }
+}
+</script>
 {% endblock %}

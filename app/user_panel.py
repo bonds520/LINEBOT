@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.models import SystemUser, QAPair, PendingQuestion, MessageLog, LineUser, TodoItem, UserTag
+from app.models import SystemUser, QAPair, PendingQuestion, MessageLog, LineUser, TodoItem, UserTag, PresetMessage, MessageQuote
 from app.auth import verify_password, create_session, destroy_session, get_current_user
 
 router = APIRouter()
@@ -218,6 +218,7 @@ def pending_list(request: Request, db: Session = Depends(get_db), user: SystemUs
         ).order_by(MessageLog.created_at.desc()).first()
         if msg:
             msg_anchor_map[item.id] = msg.id
+    presets = db.query(PresetMessage).order_by(PresetMessage.sort_order.asc(), PresetMessage.id.asc()).all()
     return templates.TemplateResponse(request=request, name="user_pending.html", context={
         "user": user,
         "items": items,
@@ -227,6 +228,7 @@ def pending_list(request: Request, db: Session = Depends(get_db), user: SystemUs
         "user_tags_map": user_tags_map,
         "user_notes_map": user_notes_map,
         "msg_anchor_map": msg_anchor_map,
+        "presets": presets,
     })
 
 
@@ -454,6 +456,13 @@ def chat_history(
     for u in users:
         utags = db.query(UserTag).filter(UserTag.line_user_id == u.line_user_id).all()
         all_user_tags[u.line_user_id] = utags
+    # 建立引用資料對照（message_log_id → MessageQuote）
+    quote_map = {}
+    if messages:
+        msg_ids = [m.id for m in messages]
+        quotes = db.query(MessageQuote).filter(MessageQuote.message_log_id.in_(msg_ids)).all()
+        quote_map = {q.message_log_id: q for q in quotes}
+    presets = db.query(PresetMessage).order_by(PresetMessage.sort_order.asc(), PresetMessage.id.asc()).all()
     return templates.TemplateResponse(request=request, name="user_history.html", context={
         "user": user,
         "users": users,
@@ -471,6 +480,8 @@ def chat_history(
         "q": q,
         "date_from": date_from,
         "date_to": date_to,
+        "presets": presets,
+        "quote_map": quote_map,
         "pending_reply_count": get_reply_count(db),
         "todo_count": get_todo_count(db),
     })
@@ -527,6 +538,118 @@ def user_note_update(
         lu.note = note.strip() or None
         db.commit()
     return RedirectResponse(url=f"/dashboard/history?line_user_id={line_user_id}&note_saved=1", status_code=302)
+
+
+# ── 從聊天記錄直接回覆 ──────────────────────────────────────────
+@router.post("/dashboard/history/reply")
+def history_reply(
+    line_user_id: str = Form(...),
+    message: str = Form(...),
+    quote_name: str = Form(""),
+    quote_text: str = Form(""),
+    db: Session = Depends(get_db),
+    user: SystemUser = Depends(current_user_dep),
+):
+    from app.handlers import push_message
+    reply = message.strip()
+    if not reply:
+        return RedirectResponse(url=f"/dashboard/history?line_user_id={line_user_id}", status_code=302)
+
+    has_quote = bool(quote_name.strip() and quote_text.strip())
+    if has_quote:
+        preview = quote_text.strip()
+        if len(preview) > 50:
+            preview = preview[:50] + "…"
+        # 傳送給 LINE 的文字加上引用提示；DB 僅存純回覆文字
+        line_text = f"「↩ {quote_name.strip()}：{preview}」\n{reply}"
+    else:
+        line_text = reply
+
+    try:
+        msg_log = push_message(line_user_id, line_text, db, msg_type="staff", log_content=reply)
+        if has_quote and msg_log:
+            db.add(MessageQuote(
+                message_log_id=msg_log.id,
+                quote_sender=quote_name.strip(),
+                quote_preview=quote_text.strip()[:200],
+            ))
+            db.commit()
+    except Exception as e:
+        return RedirectResponse(
+            url=f"/dashboard/history?line_user_id={line_user_id}&error={str(e)[:80]}",
+            status_code=302,
+        )
+    return RedirectResponse(
+        url=f"/dashboard/history?line_user_id={line_user_id}&replied=1",
+        status_code=302,
+    )
+
+
+# ── 預設訊息管理 ──────────────────────────────────────────────
+@router.get("/dashboard/presets", response_class=HTMLResponse)
+def preset_list(request: Request, db: Session = Depends(get_db), user: SystemUser = Depends(current_user_dep)):
+    presets = db.query(PresetMessage).order_by(PresetMessage.sort_order.asc(), PresetMessage.id.asc()).all()
+    categories = [c[0] for c in db.query(PresetMessage.category).distinct().all() if c[0]]
+    return templates.TemplateResponse(request=request, name="user_presets.html", context={
+        "user": user,
+        "presets": presets,
+        "categories": categories,
+        "pending_reply_count": get_reply_count(db),
+        "todo_count": get_todo_count(db),
+    })
+
+
+@router.post("/dashboard/presets/create")
+def preset_create(
+    title: str = Form(...),
+    content: str = Form(...),
+    category: str = Form("一般"),
+    sort_order: int = Form(0),
+    db: Session = Depends(get_db),
+    user: SystemUser = Depends(current_user_dep),
+):
+    db.add(PresetMessage(
+        title=title.strip(),
+        content=content.strip(),
+        category=category.strip() or "一般",
+        sort_order=sort_order,
+        created_by=user.display_name,
+    ))
+    db.commit()
+    return RedirectResponse(url="/dashboard/presets?created=1", status_code=302)
+
+
+@router.post("/dashboard/presets/{preset_id}/update")
+def preset_update(
+    preset_id: int,
+    title: str = Form(...),
+    content: str = Form(...),
+    category: str = Form("一般"),
+    sort_order: int = Form(0),
+    db: Session = Depends(get_db),
+    user: SystemUser = Depends(current_user_dep),
+):
+    p = db.query(PresetMessage).filter(PresetMessage.id == preset_id).first()
+    if p:
+        p.title = title.strip()
+        p.content = content.strip()
+        p.category = category.strip() or "一般"
+        p.sort_order = sort_order
+        db.commit()
+    return RedirectResponse(url="/dashboard/presets?updated=1", status_code=302)
+
+
+@router.post("/dashboard/presets/{preset_id}/delete")
+def preset_delete(
+    preset_id: int,
+    db: Session = Depends(get_db),
+    user: SystemUser = Depends(current_user_dep),
+):
+    p = db.query(PresetMessage).filter(PresetMessage.id == preset_id).first()
+    if p:
+        db.delete(p)
+        db.commit()
+    return RedirectResponse(url="/dashboard/presets?deleted=1", status_code=302)
 
 
 # ── 已訓練 Q&A ────────────────────────────────────────────────
