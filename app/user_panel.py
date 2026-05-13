@@ -204,11 +204,20 @@ def pending_list(request: Request, db: Session = Depends(get_db), user: SystemUs
     pending_count = sum(1 for i in items if i.status == "pending")
     user_tags_map = {}
     user_notes_map = {}
+    msg_anchor_map = {}
     for item in items:
         utags = db.query(UserTag).filter(UserTag.line_user_id == item.line_user_id).all()
         user_tags_map[item.line_user_id] = utags
         lu = db.query(LineUser).filter(LineUser.line_user_id == item.line_user_id).first()
         user_notes_map[item.line_user_id] = lu.note if lu else None
+        # 找對應的 MessageLog ID（最接近且不超過問題建立時間的 incoming 訊息）
+        msg = db.query(MessageLog).filter(
+            MessageLog.line_user_id == item.line_user_id,
+            MessageLog.direction == "incoming",
+            MessageLog.created_at <= item.created_at,
+        ).order_by(MessageLog.created_at.desc()).first()
+        if msg:
+            msg_anchor_map[item.id] = msg.id
     return templates.TemplateResponse(request=request, name="user_pending.html", context={
         "user": user,
         "items": items,
@@ -217,6 +226,7 @@ def pending_list(request: Request, db: Session = Depends(get_db), user: SystemUs
         "todo_count": get_todo_count(db),
         "user_tags_map": user_tags_map,
         "user_notes_map": user_notes_map,
+        "msg_anchor_map": msg_anchor_map,
     })
 
 
@@ -384,32 +394,60 @@ def todo_create(
 
 # ── 聊天記錄 ─────────────────────────────────────────────────
 @router.get("/dashboard/history", response_class=HTMLResponse)
-def chat_history(request: Request, line_user_id: str = "", anchor: str = "", db: Session = Depends(get_db), user: SystemUser = Depends(current_user_dep)):
+def chat_history(
+    request: Request,
+    line_user_id: str = "",
+    anchor_id: int = 0,
+    q: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    db: Session = Depends(get_db),
+    user: SystemUser = Depends(current_user_dep),
+):
     users = db.query(LineUser).order_by(LineUser.display_name).all()
     messages = []
     selected_user = None
-    if line_user_id:
-        selected_user = db.query(LineUser).filter(LineUser.line_user_id == line_user_id).first()
-        messages = db.query(MessageLog).filter(
-            MessageLog.line_user_id == line_user_id
-        ).order_by(MessageLog.created_at.asc()).all()
-    elif users:
-        selected_user = users[0]
-        line_user_id = selected_user.line_user_id
-        messages = db.query(MessageLog).filter(
-            MessageLog.line_user_id == line_user_id
-        ).order_by(MessageLog.created_at.asc()).all()
+    search_results = []
+    is_search = bool(q or date_from or date_to)
 
-    # 找最靠近 anchor 時間戳的訊息 ID
-    anchor_msg_id = None
-    if anchor and messages:
-        try:
-            from datetime import datetime as dt
-            anchor_dt = dt.fromisoformat(anchor)
-            closest = min(messages, key=lambda m: abs((m.created_at - anchor_dt).total_seconds()))
-            anchor_msg_id = closest.id
-        except Exception:
-            pass
+    if is_search:
+        # 全域搜尋模式：跨用戶搜尋
+        mq = db.query(MessageLog)
+        if q:
+            mq = mq.filter(MessageLog.content.like(f"%{q}%"))
+        if date_from:
+            mq = mq.filter(MessageLog.created_at >= date_from)
+        if date_to:
+            mq = mq.filter(MessageLog.created_at <= f"{date_to} 23:59:59")
+        if line_user_id:
+            mq = mq.filter(MessageLog.line_user_id == line_user_id)
+        search_results = mq.order_by(MessageLog.created_at.desc()).limit(200).all()
+        # 組建用戶顯示名稱對照
+        uid_set = {m.line_user_id for m in search_results}
+        uid_name_map = {}
+        for uid in uid_set:
+            lu = db.query(LineUser).filter(LineUser.line_user_id == uid).first()
+            uid_name_map[uid] = lu.display_name if lu else uid[:8] + "…"
+        # 選中用戶（若有指定）
+        if line_user_id:
+            selected_user = db.query(LineUser).filter(LineUser.line_user_id == line_user_id).first()
+    else:
+        # 一般模式：顯示單一用戶對話
+        uid_name_map = {}
+        if line_user_id:
+            selected_user = db.query(LineUser).filter(LineUser.line_user_id == line_user_id).first()
+            messages = db.query(MessageLog).filter(
+                MessageLog.line_user_id == line_user_id
+            ).order_by(MessageLog.created_at.asc()).all()
+        elif users:
+            selected_user = users[0]
+            line_user_id = selected_user.line_user_id
+            messages = db.query(MessageLog).filter(
+                MessageLog.line_user_id == line_user_id
+            ).order_by(MessageLog.created_at.asc()).all()
+
+    # anchor_id 直接使用，不再用時間戳推算（避免秒精度碰撞）
+    anchor_msg_id = anchor_id if anchor_id else None
 
     tags = db.query(UserTag).filter(UserTag.line_user_id == line_user_id).all() if line_user_id else []
     all_user_tags = {}
@@ -427,6 +465,12 @@ def chat_history(request: Request, line_user_id: str = "", anchor: str = "", db:
         "all_user_tags": all_user_tags,
         "tag_colors": TAG_COLORS,
         "tag_color_labels": TAG_COLOR_LABELS,
+        "is_search": is_search,
+        "search_results": search_results,
+        "uid_name_map": uid_name_map if is_search else {},
+        "q": q,
+        "date_from": date_from,
+        "date_to": date_to,
         "pending_reply_count": get_reply_count(db),
         "todo_count": get_todo_count(db),
     })

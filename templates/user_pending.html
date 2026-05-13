@@ -61,7 +61,7 @@
               <i class="bi bi-sticky-fill"></i> {{ unote[:20] }}{% if unote|length > 20 %}…{% endif %}
             </div>
             {% endif %}
-            <a href="/dashboard/history?line_user_id={{ item.line_user_id }}&anchor={{ item.created_at.strftime('%Y-%m-%dT%H:%M:%S') }}"
+            <a href="/dashboard/history?line_user_id={{ item.line_user_id }}{% if msg_anchor_map.get(item.id) %}&anchor_id={{ msg_anchor_map[item.id] }}{% endif %}"
                class="text-muted text-decoration-none mt-1 d-block" style="font-size:0.7rem">
               <i class="bi bi-chat-text"></i> 查看對話
             </a>

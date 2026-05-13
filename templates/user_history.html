@@ -1,7 +1,9 @@
 {% extends "user_base.html" %}
 {% set page = "history" %}
 {% block content %}
-<h4 class="mb-3"><i class="bi bi-chat-square-text"></i> 聊天記錄</h4>
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4 class="mb-0"><i class="bi bi-chat-square-text"></i> 聊天記錄</h4>
+</div>
 
 {% if request.query_params.get('note_saved') %}
 <div class="alert alert-success alert-dismissible fade show py-2">
@@ -10,7 +12,115 @@
 </div>
 {% endif %}
 
-<div class="row g-3" style="height:calc(100vh - 155px)">
+<!-- 搜尋列 -->
+<form method="get" action="/dashboard/history" class="card mb-3">
+  <div class="card-body py-2">
+    <div class="row g-2 align-items-end">
+      <div class="col-md-4">
+        <label class="form-label small fw-bold mb-1"><i class="bi bi-search"></i> 關鍵字</label>
+        <input type="text" name="q" class="form-control form-control-sm"
+               placeholder="搜尋訊息內容..." value="{{ q }}">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small fw-bold mb-1">開始日期</label>
+        <input type="date" name="date_from" class="form-control form-control-sm" value="{{ date_from }}">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small fw-bold mb-1">結束日期</label>
+        <input type="date" name="date_to" class="form-control form-control-sm" value="{{ date_to }}">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label small fw-bold mb-1">指定用戶</label>
+        <select name="line_user_id" class="form-select form-select-sm">
+          <option value="">全部用戶</option>
+          {% for u in users %}
+          <option value="{{ u.line_user_id }}" {% if u.line_user_id == selected_uid and is_search %}selected{% endif %}>
+            {{ u.display_name or u.line_user_id[:12] }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-2 d-flex gap-1">
+        <button type="submit" class="btn btn-sm btn-primary w-100">
+          <i class="bi bi-search"></i> 搜尋
+        </button>
+        {% if is_search %}
+        <a href="/dashboard/history" class="btn btn-sm btn-outline-secondary">
+          <i class="bi bi-x"></i>
+        </a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</form>
+
+{% if is_search %}
+<!-- 搜尋結果 -->
+<div class="card">
+  <div class="card-header fw-bold small">
+    <i class="bi bi-search"></i> 搜尋結果
+    <span class="badge bg-secondary ms-1">{{ search_results | length }} 筆</span>
+    {% if search_results | length == 200 %}
+    <span class="text-muted ms-2" style="font-size:0.75rem">（顯示最新 200 筆）</span>
+    {% endif %}
+  </div>
+  {% if search_results %}
+  <div class="table-responsive">
+    <table class="table table-hover table-sm mb-0">
+      <thead class="table-light">
+        <tr>
+          <th style="width:140px">時間</th>
+          <th style="width:120px">用戶</th>
+          <th>訊息內容</th>
+          <th style="width:80px">類型</th>
+          <th style="width:80px">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for msg in search_results %}
+        <tr>
+          <td class="text-muted small">{{ msg.created_at.strftime('%Y/%m/%d %H:%M') }}</td>
+          <td class="small">{{ uid_name_map.get(msg.line_user_id, msg.line_user_id[:8] + '…') }}</td>
+          <td>
+            {% if q and msg.content %}
+              {% set parts = msg.content.split(q) %}
+              {% for part in parts %}
+                {{ part }}{% if not loop.last %}<mark class="px-0 bg-warning">{{ q }}</mark>{% endif %}
+              {% endfor %}
+            {% else %}
+              {{ msg.content }}
+            {% endif %}
+          </td>
+          <td>
+            {% if msg.direction == 'incoming' %}
+            <span class="badge bg-light text-dark border">用戶</span>
+            {% elif msg.message_type == 'staff' %}
+            <span class="badge bg-primary">小編</span>
+            {% else %}
+            <span class="badge" style="background:#06C755">Bot</span>
+            {% endif %}
+          </td>
+          <td>
+            <a href="/dashboard/history?line_user_id={{ msg.line_user_id }}&anchor_id={{ msg.id }}"
+               class="btn btn-sm btn-outline-secondary py-0 px-1" style="font-size:0.75rem">
+              <i class="bi bi-box-arrow-up-right"></i> 跳轉
+            </a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card-body text-center text-muted py-4">
+    <i class="bi bi-inbox fs-2"></i>
+    <p class="mt-2 mb-0">找不到符合條件的訊息</p>
+  </div>
+  {% endif %}
+</div>
+
+{% else %}
+<div class="row g-3" style="height:calc(100vh - 260px)">
 
   <!-- 左側：用戶清單 -->
   <div class="col-3">
@@ -99,10 +209,9 @@
             {% set ns.last_date = msg_date %}
             {% endif %}
 
-            {% set is_anchor = (anchor_msg_id == msg.id) %}
             {% if msg.direction == 'incoming' %}
             <!-- 用戶訊息（左側） -->
-            <div id="msg-{{ msg.id }}" class="d-flex align-items-end gap-2 mb-2{% if is_anchor %} anchor-highlight{% endif %}">
+            <div id="msg-{{ msg.id }}" class="d-flex align-items-end gap-2 mb-2">
               <i class="bi bi-person-circle fs-4 text-muted flex-shrink-0"></i>
               <div>
                 <div class="small text-muted mb-1">{{ selected_user.display_name or '用戶' }}</div>
@@ -115,7 +224,7 @@
             </div>
             {% elif msg.message_type == 'staff' %}
             <!-- 小編人工回覆（右側，藍色） -->
-            <div id="msg-{{ msg.id }}" class="d-flex align-items-end justify-content-end gap-2 mb-2{% if is_anchor %} anchor-highlight{% endif %}">
+            <div id="msg-{{ msg.id }}" class="d-flex align-items-end justify-content-end gap-2 mb-2">
               <div class="text-end">
                 <div class="small text-muted mb-1">小編回覆</div>
                 <div class="rounded-3 px-3 py-2 d-inline-block shadow-sm"
@@ -128,7 +237,7 @@
             </div>
             {% else %}
             <!-- Bot 自動回覆（右側，綠色） -->
-            <div id="msg-{{ msg.id }}" class="d-flex align-items-end justify-content-end gap-2 mb-2{% if is_anchor %} anchor-highlight{% endif %}">
+            <div id="msg-{{ msg.id }}" class="d-flex align-items-end justify-content-end gap-2 mb-2">
               <div class="text-end">
                 <div class="small text-muted mb-1">Bot</div>
                 <div class="rounded-3 px-3 py-2 d-inline-block shadow-sm"
@@ -239,6 +348,7 @@
     {% endif %}
   </div>
 </div>
+{% endif %}
 
 <style>
   .anchor-highlight {
@@ -254,20 +364,36 @@
 <script>
   const anchorId = {{ anchor_msg_id | tojson }};
   const box = document.getElementById('chatBox');
+
+  function scrollToAnchor() {
+    if (!anchorId || !box) return false;
+    const target = document.getElementById('msg-' + anchorId);
+    if (!target) return false;
+
+    // 用文件絕對座標計算 target 在 box 內的偏移
+    // getBoundingClientRect 是視窗相對座標，加上 scrollY 得文件絕對座標
+    const targetAbsTop = target.getBoundingClientRect().top + window.scrollY;
+    const boxAbsTop    = box.getBoundingClientRect().top   + window.scrollY;
+    const targetOffsetInBox = targetAbsTop - boxAbsTop + box.scrollTop;
+
+    // 捲動讓目標置中顯示
+    box.scrollTop = targetOffsetInBox - box.clientHeight / 2 + target.offsetHeight / 2;
+
+    // 捲動後再觸發動畫，確保用戶看得到
+    setTimeout(() => {
+      target.classList.add('anchor-highlight');
+      setTimeout(() => target.classList.remove('anchor-highlight'), 2600);
+    }, 100);
+    return true;
+  }
+
   if (box) {
-    if (anchorId) {
-      const target = document.getElementById('msg-' + anchorId);
-      if (target) {
-        // 手動計算在 overflow 容器內的捲動位置
-        const boxRect = box.getBoundingClientRect();
-        const targetRect = target.getBoundingClientRect();
-        box.scrollTop = box.scrollTop + (targetRect.top - boxRect.top) - (box.clientHeight / 2) + (target.clientHeight / 2);
-      } else {
+    // 等 DOM 完全渲染後再執行
+    requestAnimationFrame(() => {
+      if (!scrollToAnchor()) {
         box.scrollTop = box.scrollHeight;
       }
-    } else {
-      box.scrollTop = box.scrollHeight;
-    }
+    });
   }
 
   function removeTag(tagId, userId) {
