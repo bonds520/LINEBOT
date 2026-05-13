@@ -19,6 +19,7 @@ FastAPI + Uvicorn (0.0.0.0:8000)
     ├── /webhook          ← LINE Webhook 端點
     ├── /admin/*          ← 管理員後台
     ├── /dashboard/*      ← 小編使用者後台
+    ├── /static/*         ← 靜態檔案（用戶上傳圖片/影片）
     └── /login            ← 使用者登入
     │
     ▼
@@ -77,9 +78,12 @@ Database: linebot
 │   ├── user_create_qa.html  # 建立 Q&A
 │   ├── user_trained.html    # 已訓練 Q&A（可匯出）
 │   ├── user_pending.html    # 待回覆清單（人工回覆）
-│   ├── user_history.html    # 聊天記錄（氣泡版面）
+│   ├── user_history.html    # 聊天記錄（氣泡版面，含自動更新）
+│   ├── user_presets.html    # 預設訊息管理
 │   ├── user_todo.html       # 待辦事項清單
 │   └── user_todo_create.html # 新增待辦事項
+├── static/
+│   └── images/              # 用戶傳入的圖片/影片（LINE Content API 下載儲存）
 ├── backups/                 # 資料庫備份存放目錄
 ├── .env                     # 環境變數（不納入版控）
 ├── .env.example             # 環境變數範本
@@ -111,8 +115,8 @@ Database: linebot
 | id | INT | 主鍵 |
 | line_user_id | VARCHAR(64) | LINE 用戶 ID |
 | direction | ENUM | incoming / outgoing |
-| message_type | VARCHAR(32) | 訊息類型 |
-| content | TEXT | 訊息內容 |
+| message_type | VARCHAR(32) | 訊息類型（text / image / video / staff） |
+| content | TEXT | 訊息內容；image/video 為 `/static/images/` 檔案路徑 |
 | created_at | DATETIME | 建立時間 |
 
 ### `qa_pairs` — Q&A 問答對
@@ -213,16 +217,26 @@ Database: linebot
 ```
 用戶傳訊息
     │
-    ▼
-自動呼叫 LINE Profile API 取得用戶顯示名稱與頭貼
-    │
-    ▼
-模糊比對 Q&A（rapidfuzz，相似度 ≥ 60%，僅比對已訓練建檔的 Q&A）
-關鍵字支援分隔符：, 、 ， ； ;
-    │
-    ├── 找到匹配 ──► 回傳對應答案 + 更新命中數
-    │
-    └── 未找到 ───► 回覆「轉交客服」通知 + 記錄至待回覆清單
+    ├── 文字訊息 ──────────────────────────────────────────────────┐
+    │                                                              │
+    │   自動呼叫 LINE Profile API 取得用戶顯示名稱與頭貼              │
+    │       │                                                      │
+    │       ▼                                                      │
+    │   模糊比對 Q&A（rapidfuzz，相似度 ≥ 60%，僅比對已訓練建檔）     │
+    │   關鍵字支援分隔符：, 、 ， ； ;                                │
+    │       │                                                      │
+    │       ├── 找到匹配 ──► 回傳對應答案 + 更新命中數               │
+    │       └── 未找到   ──► 回覆「轉交客服」通知 + 記錄待回覆清單    │
+    │                                                              ▼
+    ├── 圖片訊息 ──► 呼叫 LINE Content API 下載原圖                 │
+    │               │                                             │
+    │               ▼                                             │
+    │           儲存至 /static/images/<uuid>.jpg                  │
+    │               │                                             │
+    │               ▼                                             │
+    │           記錄 MessageLog（type=image, content=檔案路徑）     │
+    │                                                             │
+    └── 影片訊息 ──► 同上流程，儲存為 .mp4，type=video             ◄┘
 ```
 
 ### 人工回覆流程
@@ -266,7 +280,7 @@ Database: linebot
 | 儀表板 | `/dashboard` | 訓練進度、待回覆、待辦事項數量概覽 |
 | 待回覆清單 | `/dashboard/pending` | 查看待人工回覆訊息、透過 LINE 直接回覆或建立待辦事項、顯示用戶標籤/備註、點「查看對話」直接跳至該則訊息 |
 | 待辦事項 | `/dashboard/todo` | 管理待辦清單，含逾期/緊急/即將到期三層警示 |
-| 聊天記錄 | `/dashboard/history` | 查看完整對話（Bot/小編回覆不同顏色區分）、全域關鍵字搜尋（含高亮與跳轉）、底部直接回覆用戶（可套用預設訊息）、點訊息旁「↩ 回覆」引用特定訊息 |
+| 聊天記錄 | `/dashboard/history` | 查看完整對話（Bot/小編回覆不同顏色區分）、圖片/影片訊息內嵌顯示、全域關鍵字搜尋（含高亮與跳轉）、底部直接回覆用戶（可套用預設訊息）、點訊息旁「↩ 回覆」引用特定訊息、聊天視窗每 8 秒自動更新新訊息 |
 | 預設訊息 | `/dashboard/presets` | 管理回覆常用預設訊息（標題/分類/排序/內容），回覆時一鍵套用 |
 | Q&A 訓練 | `/dashboard/qa` | 編輯/刪除 Q&A、點擊「訓練建檔」完成訓練 |
 | 已訓練 Q&A | `/dashboard/trained` | 查看/刪除已建檔內容、匯出 CSV / XLS |
@@ -302,8 +316,21 @@ Database: linebot
 |------|------|
 | 直接回覆 | 聊天記錄底部輸入框可直接傳送 LINE 訊息給用戶，無須跳轉至待回覆清單 |
 | 引用回覆 | 點用戶訊息旁「↩ 回覆」，顯示引用提示列後輸入回覆；聊天記錄以仿 LINE 引用氣泡樣式顯示（白色半透明引用區塊 + 左側線條），LINE 用戶收到帶引用前綴的純文字訊息 |
+| 圖片/影片回覆 | 圖片、影片訊息同樣有「↩ 回覆」按鈕，引用內容顯示為 `[圖片]` 或 `[影片]` |
 | 預設訊息套用 | 回覆輸入區點「預設訊息」選取已建立的模板，一鍵填入 textarea |
 | 待回覆清單預設訊息 | 回覆 Modal 內含「套用預設訊息」下拉選單，快速套用常用回覆 |
+
+### 聊天記錄自動更新
+
+聊天視窗頂端顯示「自動更新中」狀態列，每 **8 秒**向 `/dashboard/history/poll` 輪詢新訊息：
+
+| 行為 | 說明 |
+|------|------|
+| 自動捲動 | 若用戶當前閱讀位置在最底部（距底 < 80px），新訊息到達後自動往下捲動 |
+| 保持位置 | 若正在向上瀏覽歷史記錄，捲動位置不受影響 |
+| 日期分隔 | 跨天新訊息自動插入日期分隔線 |
+| 狀態顯示 | 收到新訊息後狀態列更新為「更新於 HH:MM:SS」 |
+| 媒體支援 | 新到達的圖片/影片訊息同樣即時渲染，可點圖片放大查看 |
 
 ### 預設訊息
 
@@ -639,4 +666,4 @@ TUNNEL_URL=https://xxx.trycloudflare.com
 
 ---
 
-*文件最後更新：2026-05-13（新增聊天記錄直接回覆、引用回覆（仿 LINE 氣泡樣式）、預設訊息管理與套用；新增 preset_messages / message_quotes 資料表）*
+*文件最後更新：2026-05-13（新增圖片/影片訊息接收與顯示、圖片/影片引用回覆（`[圖片]`/`[影片]` 佔位）、聊天記錄每 8 秒自動輪詢更新、VideoMessageContent 處理；靜態檔案掛載至 `/static`；新增 `/dashboard/history/poll` API）*

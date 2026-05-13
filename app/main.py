@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from linebot.v3 import WebhookParser
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.webhooks import (
-    MessageEvent, TextMessageContent,
+    MessageEvent, TextMessageContent, ImageMessageContent, VideoMessageContent,
     FollowEvent, UnfollowEvent
 )
 from app.database import get_db, engine
@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="LINE Bot", version="1.0.0")
+app.mount("/static", StaticFiles(directory="static"), name="static")
 app.include_router(admin_router)
 app.include_router(user_router)
 
@@ -56,6 +57,10 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
         try:
             if isinstance(event, MessageEvent) and isinstance(event.message, TextMessageContent):
                 handlers.handle_text_message(event, db)
+            elif isinstance(event, MessageEvent) and isinstance(event.message, ImageMessageContent):
+                handlers.handle_image_message(event, db)
+            elif isinstance(event, MessageEvent) and isinstance(event.message, VideoMessageContent):
+                handlers.handle_video_message(event, db)
             elif isinstance(event, FollowEvent):
                 handlers.handle_follow_event(event, db)
             elif isinstance(event, UnfollowEvent):

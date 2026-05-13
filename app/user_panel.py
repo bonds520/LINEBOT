@@ -2,7 +2,7 @@ import csv
 import io
 from datetime import datetime
 from fastapi import APIRouter, Depends, Request, Form, UploadFile, File
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from app.database import get_db
@@ -485,6 +485,46 @@ def chat_history(
         "pending_reply_count": get_reply_count(db),
         "todo_count": get_todo_count(db),
     })
+
+
+# ── 聊天記錄輪詢（自動更新用） ────────────────────────────────────
+@router.get("/dashboard/history/poll")
+def history_poll(
+    line_user_id: str,
+    after_id: int = 0,
+    db: Session = Depends(get_db),
+    user: SystemUser = Depends(current_user_dep),
+):
+    messages = db.query(MessageLog).filter(
+        MessageLog.line_user_id == line_user_id,
+        MessageLog.id > after_id,
+    ).order_by(MessageLog.created_at.asc()).all()
+
+    if not messages:
+        return JSONResponse({"messages": []})
+
+    staff_ids = [m.id for m in messages if m.message_type == "staff"]
+    quote_map = {}
+    if staff_ids:
+        quotes = db.query(MessageQuote).filter(MessageQuote.message_log_id.in_(staff_ids)).all()
+        quote_map = {q.message_log_id: q for q in quotes}
+
+    result = []
+    for msg in messages:
+        item = {
+            "id": msg.id,
+            "direction": msg.direction,
+            "message_type": msg.message_type,
+            "content": msg.content,
+            "created_at": msg.created_at.strftime("%H:%M"),
+            "date": msg.created_at.strftime("%Y/%m/%d"),
+        }
+        if msg.id in quote_map:
+            q = quote_map[msg.id]
+            item["quote"] = {"sender": q.quote_sender, "preview": q.quote_preview}
+        result.append(item)
+
+    return JSONResponse({"messages": result})
 
 
 # ── 用戶標籤與備註 ───────────────────────────────────────────────

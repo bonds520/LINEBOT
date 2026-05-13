@@ -1,11 +1,12 @@
 from linebot.v3.messaging import (
-    ApiClient, MessagingApi, Configuration,
+    ApiClient, MessagingApi, MessagingApiBlob, Configuration,
     ReplyMessageRequest, PushMessageRequest, TextMessage
 )
 from sqlalchemy.orm import Session
 from app.models import LineUser, MessageLog, QAPair, PendingQuestion
 from app.matcher import find_best_match
 import os
+import uuid
 
 
 def get_messaging_api() -> MessagingApi:
@@ -84,6 +85,54 @@ def handle_text_message(event, db: Session):
     )
 
     log_message(db, user_id, "outgoing", "text", reply_text)
+
+
+def handle_image_message(event, db: Session):
+    user_id = event.source.user_id
+    message_id = event.message.id
+
+    configuration = Configuration(access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
+    with ApiClient(configuration) as api_client:
+        blob_api = MessagingApiBlob(api_client)
+        image_bytes = blob_api.get_message_content(message_id)
+
+    filename = f"{uuid.uuid4().hex}.jpg"
+    save_dir = os.path.join(os.path.dirname(__file__), "..", "static", "images")
+    os.makedirs(save_dir, exist_ok=True)
+    save_path = os.path.join(save_dir, filename)
+    with open(save_path, "wb") as f:
+        f.write(image_bytes)
+
+    image_url = f"/static/images/{filename}"
+
+    messaging_api = get_messaging_api()
+    display_name, picture_url = fetch_profile(messaging_api, user_id)
+    upsert_user(db, user_id, display_name, picture_url)
+    log_message(db, user_id, "incoming", "image", image_url)
+
+
+def handle_video_message(event, db: Session):
+    user_id = event.source.user_id
+    message_id = event.message.id
+
+    configuration = Configuration(access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
+    with ApiClient(configuration) as api_client:
+        blob_api = MessagingApiBlob(api_client)
+        video_bytes = blob_api.get_message_content(message_id)
+
+    filename = f"{uuid.uuid4().hex}.mp4"
+    save_dir = os.path.join(os.path.dirname(__file__), "..", "static", "images")
+    os.makedirs(save_dir, exist_ok=True)
+    save_path = os.path.join(save_dir, filename)
+    with open(save_path, "wb") as f:
+        f.write(video_bytes)
+
+    video_url = f"/static/images/{filename}"
+
+    messaging_api = get_messaging_api()
+    display_name, picture_url = fetch_profile(messaging_api, user_id)
+    upsert_user(db, user_id, display_name, picture_url)
+    log_message(db, user_id, "incoming", "video", video_url)
 
 
 def push_message(line_user_id: str, text: str, db: Session, msg_type: str = "text", log_content: str = None) -> MessageLog:
