@@ -228,12 +228,27 @@
 
             {% if msg.direction == 'incoming' %}
             <!-- 用戶訊息（左側） -->
+            {% set in_quote = quote_map.get(msg.id) %}
             <div id="msg-{{ msg.id }}" class="d-flex align-items-end gap-2 mb-2">
               <i class="bi bi-person-circle fs-4 text-muted flex-shrink-0"></i>
               <div>
                 <div class="small text-muted mb-1">{{ selected_user.display_name or '用戶' }}</div>
                 <div class="rounded-3 px-3 py-2 d-inline-block shadow-sm"
                      style="background:#fff; max-width:320px; word-break:break-word">
+                  {% if in_quote %}
+                  <div class="mb-2 px-2 py-1 rounded"
+                       style="background:#f0f0f0; border-left:3px solid #aaa">
+                    {% if in_quote.quote_sender %}
+                    <div class="fw-bold" style="font-size:0.72rem; color:#555">{{ in_quote.quote_sender }}</div>
+                    {% endif %}
+                    {% if '/static/images/' in in_quote.quote_preview %}
+                    <img src="{{ in_quote.quote_preview }}" alt="圖片"
+                         style="height:48px; width:48px; object-fit:cover; border-radius:4px; display:block; margin-top:2px">
+                    {% else %}
+                    <div style="font-size:0.8rem; color:#666">{{ in_quote.quote_preview }}</div>
+                    {% endif %}
+                  </div>
+                  {% endif %}
                   {% if msg.message_type == 'image' %}
                   <a href="{{ msg.content }}" target="_blank">
                     <img src="{{ msg.content }}" alt="圖片" style="max-width:260px; max-height:260px; border-radius:8px; display:block">
@@ -242,6 +257,16 @@
                   <video controls style="max-width:260px; border-radius:8px; display:block">
                     <source src="{{ msg.content }}" type="video/mp4">
                   </video>
+                  {% elif msg.message_type == 'file' %}
+                  {% set fname = msg.content.split('/')[-1] %}
+                  {% set fext = fname.split('.')[-1].lower() if '.' in fname else '' %}
+                  <a href="{{ msg.content }}" target="_blank" class="text-decoration-none text-dark d-flex align-items-center gap-2 py-1">
+                    <i class="bi {% if fext == 'pdf' %}bi-file-earmark-pdf text-danger{% elif fext in ['doc','docx'] %}bi-file-earmark-word text-primary{% elif fext in ['xls','xlsx','csv'] %}bi-file-earmark-excel text-success{% elif fext in ['ppt','pptx'] %}bi-file-earmark-ppt text-warning{% elif fext in ['zip','rar','7z'] %}bi-file-earmark-zip text-secondary{% else %}bi-file-earmark text-secondary{% endif %} fs-2 flex-shrink-0"></i>
+                    <div>
+                      <div class="small fw-semibold" style="word-break:break-all">{{ fname }}</div>
+                      <div style="font-size:0.7rem;color:#888">點此下載</div>
+                    </div>
+                  </a>
                   {% else %}
                   {{ msg.content }}
                   {% endif %}
@@ -250,13 +275,13 @@
                   <span class="text-muted" style="font-size:0.7rem">{{ msg.created_at.strftime('%H:%M') }}</span>
                   <button class="btn btn-link btn-sm py-0 px-0 text-muted"
                           style="font-size:0.7rem; text-decoration:none"
-                          onclick="quoteReply(msgData[{{ msg.id }}])">
+                          onclick="quoteReply(msgData[{{ msg.id }}], imgUrlData[{{ msg.id }}])">
                     <i class="bi bi-reply"></i> 回覆
                   </button>
                 </div>
               </div>
             </div>
-            {% elif msg.message_type == 'staff' %}
+            {% elif msg.message_type in ['staff', 'staff_file', 'staff_image', 'staff_video'] %}
             <!-- 小編人工回覆（右側，藍色） -->
             {% set quote = quote_map.get(msg.id) %}
             <div id="msg-{{ msg.id }}" class="d-flex align-items-end justify-content-end gap-2 mb-2">
@@ -270,10 +295,35 @@
                     {% if quote.quote_sender %}
                     <div class="fw-bold" style="font-size:0.72rem">{{ quote.quote_sender }}</div>
                     {% endif %}
+                    {% if '/static/images/' in quote.quote_preview %}
+                    <img src="{{ quote.quote_preview }}" alt="圖片"
+                         style="height:48px; width:48px; object-fit:cover; border-radius:4px; display:block">
+                    {% else %}
                     <div style="font-size:0.8rem; opacity:0.92">{{ quote.quote_preview }}</div>
+                    {% endif %}
                   </div>
                   {% endif %}
+                  {% if msg.message_type == 'staff_file' %}
+                  {% set fname = msg.content.split('/')[-1] %}
+                  {% set fext = fname.split('.')[-1].lower() if '.' in fname else '' %}
+                  <a href="{{ msg.content }}" target="_blank" class="text-decoration-none text-white d-flex align-items-center gap-2 py-1">
+                    <i class="bi {% if fext == 'pdf' %}bi-file-earmark-pdf{% elif fext in ['doc','docx'] %}bi-file-earmark-word{% elif fext in ['xls','xlsx','csv'] %}bi-file-earmark-excel{% elif fext in ['ppt','pptx'] %}bi-file-earmark-ppt{% elif fext in ['zip','rar','7z'] %}bi-file-earmark-zip{% else %}bi-file-earmark{% endif %} fs-2 flex-shrink-0" style="opacity:0.9"></i>
+                    <div>
+                      <div class="small fw-semibold" style="word-break:break-all">{{ fname }}</div>
+                      <div style="font-size:0.7rem;opacity:0.75">點此下載</div>
+                    </div>
+                  </a>
+                  {% elif msg.message_type == 'staff_image' %}
+                  <a href="{{ msg.content }}" target="_blank">
+                    <img src="{{ msg.content }}" alt="圖片" style="max-width:260px;max-height:260px;border-radius:8px;display:block">
+                  </a>
+                  {% elif msg.message_type == 'staff_video' %}
+                  <video controls style="max-width:260px;border-radius:8px;display:block">
+                    <source src="{{ msg.content }}" type="video/mp4">
+                  </video>
+                  {% else %}
                   {{ msg.content }}
+                  {% endif %}
                 </div>
                 <div class="text-muted mt-1" style="font-size:0.7rem">{{ msg.created_at.strftime('%H:%M') }}</div>
               </div>
@@ -386,7 +436,12 @@
         <!-- 引用提示列 -->
         <div id="quoteBar" class="mb-2 px-2 py-1 rounded-end small text-muted"
              style="border-left:3px solid #ffc107; background:rgba(255,193,7,0.08); display:none; justify-content:space-between; align-items:center">
-          <span><i class="bi bi-reply-fill text-warning me-1"></i><span id="quoteText"></span></span>
+          <span class="d-flex align-items-center gap-2">
+            <i class="bi bi-reply-fill text-warning flex-shrink-0"></i>
+            <img id="quoteThumbImg" src="" alt=""
+                 style="display:none; height:40px; width:40px; object-fit:cover; border-radius:4px; flex-shrink:0">
+            <span id="quoteText"></span>
+          </span>
           <button type="button" class="btn-close ms-2" style="font-size:0.55rem" onclick="clearQuote()"></button>
         </div>
         <form method="post" action="/dashboard/history/reply" id="historyReplyForm">
@@ -412,6 +467,28 @@
             </div>
           </div>
         </form>
+        <!-- 傳送檔案 -->
+        <div class="border-top mt-2 pt-2">
+          <form method="post" action="/dashboard/history/send_file"
+                enctype="multipart/form-data" id="fileSendForm">
+            <input type="hidden" name="line_user_id" value="{{ selected_user.line_user_id }}">
+            <div class="d-flex align-items-center gap-2">
+              <label class="btn btn-sm btn-outline-secondary mb-0" style="cursor:pointer" id="filePickBtn">
+                <i class="bi bi-paperclip"></i> 傳送檔案
+                <input type="file" name="file" id="fileInput" style="display:none"
+                       accept=".jpg,.jpeg,.png,.gif,.webp,.mp4,.mov,.avi,.m4v,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.zip,.rar,.7z,.txt,.csv"
+                       onchange="onFileSelected(this)">
+              </label>
+              <span id="fileNameDisplay" class="text-muted small flex-grow-1"></span>
+              <button type="submit" id="fileSendBtn" class="btn btn-sm btn-primary" style="display:none">
+                <i class="bi bi-cloud-upload"></i> 傳送
+              </button>
+            </div>
+            <div class="text-muted mt-1" style="font-size:0.68rem">
+              圖片（JPG/PNG/GIF/WEBP）· 影片（MP4/MOV）· PDF/Word/Excel/PPT/ZIP/TXT（上限 50 MB）
+            </div>
+          </form>
+        </div>
       </div>
     </div>
 
@@ -482,9 +559,13 @@
   const presetData = {
     {% for p in presets %}{{ p.id }}: {{ p.content | tojson }},{% endfor %}
   };
-  // 訊息內容（key = msg.id，僅 incoming；圖片/影片用佔位字串）
+  // 訊息內容（key = msg.id，僅 incoming；媒體/檔案用佔位字串）
   const msgData = {
-    {% for msg in messages %}{% if msg.direction == 'incoming' %}{{ msg.id }}: {{ ('[圖片]' if msg.message_type == 'image' else '[影片]' if msg.message_type == 'video' else (msg.content or '')) | tojson }},{% endif %}{% endfor %}
+    {% for msg in messages %}{% if msg.direction == 'incoming' %}{{ msg.id }}: {{ ('[圖片]' if msg.message_type == 'image' else '[影片]' if msg.message_type == 'video' else '[檔案]' if msg.message_type == 'file' else (msg.content or '')) | tojson }},{% endif %}{% endfor %}
+  };
+  // 圖片 URL（key = msg.id，僅 incoming image，用於引用縮圖）
+  const imgUrlData = {
+    {% for msg in messages %}{% if msg.direction == 'incoming' and msg.message_type == 'image' %}{{ msg.id }}: {{ msg.content | tojson }},{% endif %}{% endfor %}
   };
   const selectedUserName = {{ (selected_user.display_name if selected_user else '用戶') | tojson }};
 
@@ -529,43 +610,84 @@
     if (closeBtn) closeBtn.click();
   }
 
-  // 點訊息旁「回覆」按鈕 → 顯示引用列並聚焦輸入區，同時記錄引用資訊
-  function quoteReply(content) {
+  // 點訊息旁「回覆」按鈕 → 顯示引用列並聚焦輸入區
+  // imgUrl：圖片訊息時傳入路徑，引用列顯示縮圖
+  function quoteReply(content, imgUrl) {
     const bar    = document.getElementById('quoteBar');
     const qtext  = document.getElementById('quoteText');
+    const qthumb = document.getElementById('quoteThumbImg');
     const ta     = document.getElementById('historyReplyText');
     const card   = document.getElementById('replyCard');
     const hName  = document.getElementById('quoteHiddenName');
     const hText  = document.getElementById('quoteHiddenText');
     if (!bar || !qtext || !ta) return;
-    const preview = content.length > 60 ? content.substring(0, 60) + '…' : content;
-    qtext.textContent = preview;
+    if (imgUrl) {
+      qthumb.src = imgUrl;
+      qthumb.style.display = 'inline-block';
+      qtext.textContent = '';
+      if (hText) hText.value = imgUrl;   // 儲存圖片 URL 供後端渲染縮圖
+    } else {
+      qthumb.style.display = 'none';
+      const preview = (content || '').length > 60 ? content.substring(0, 60) + '…' : (content || '');
+      qtext.textContent = preview;
+      if (hText) hText.value = content || '';
+    }
     bar.style.display = 'flex';
     if (hName) hName.value = selectedUserName;
-    if (hText) hText.value = content;
     if (card) card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     setTimeout(() => ta.focus(), 300);
   }
 
   function clearQuote() {
-    const bar   = document.getElementById('quoteBar');
-    const hName = document.getElementById('quoteHiddenName');
-    const hText = document.getElementById('quoteHiddenText');
-    if (bar)   bar.style.display = 'none';
-    if (hName) hName.value = '';
-    if (hText) hText.value = '';
+    const bar    = document.getElementById('quoteBar');
+    const qthumb = document.getElementById('quoteThumbImg');
+    const hName  = document.getElementById('quoteHiddenName');
+    const hText  = document.getElementById('quoteHiddenText');
+    if (bar)    bar.style.display = 'none';
+    if (qthumb) { qthumb.style.display = 'none'; qthumb.src = ''; }
+    if (hName)  hName.value = '';
+    if (hText)  hText.value = '';
+  }
+
+  function onFileSelected(input) {
+    const name = input.files[0] ? input.files[0].name : '';
+    document.getElementById('fileNameDisplay').textContent = name;
+    document.getElementById('fileSendBtn').style.display = name ? '' : 'none';
   }
 
   // ── 自動更新（輪詢新訊息） ──────────────────────────────────────
+  function fileIcon(filename, forDark) {
+    const ext = filename.split('.').pop().toLowerCase();
+    const map = {
+      'pdf':  'bi-file-earmark-pdf'  + (forDark ? '' : ' text-danger'),
+      'doc':  'bi-file-earmark-word' + (forDark ? '' : ' text-primary'),
+      'docx': 'bi-file-earmark-word' + (forDark ? '' : ' text-primary'),
+      'xls':  'bi-file-earmark-excel'+ (forDark ? '' : ' text-success'),
+      'xlsx': 'bi-file-earmark-excel'+ (forDark ? '' : ' text-success'),
+      'csv':  'bi-file-earmark-excel'+ (forDark ? '' : ' text-success'),
+      'ppt':  'bi-file-earmark-ppt'  + (forDark ? '' : ' text-warning'),
+      'pptx': 'bi-file-earmark-ppt'  + (forDark ? '' : ' text-warning'),
+      'zip':  'bi-file-earmark-zip'  + (forDark ? '' : ' text-secondary'),
+      'rar':  'bi-file-earmark-zip'  + (forDark ? '' : ' text-secondary'),
+      '7z':   'bi-file-earmark-zip'  + (forDark ? '' : ' text-secondary'),
+      'txt':  'bi-file-earmark-text' + (forDark ? '' : ' text-muted'),
+    };
+    return 'bi fs-2 flex-shrink-0 ' + (map[ext] || 'bi-file-earmark' + (forDark ? '' : ' text-secondary'));
+  }
+
   function escHtml(s) {
     return String(s == null ? '' : s)
       .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
   function buildMsgHtml(msg) {
-    // 更新 msgData，讓 quoteReply 可用
+    // 更新 msgData / imgUrlData
     if (msg.direction === 'incoming') {
-      msgData[msg.id] = msg.message_type === 'image' ? '[圖片]' : msg.message_type === 'video' ? '[影片]' : (msg.content || '');
+      msgData[msg.id] = msg.message_type === 'image' ? '[圖片]'
+                      : msg.message_type === 'video' ? '[影片]'
+                      : msg.message_type === 'file'  ? '[檔案]'
+                      : (msg.content || '');
+      if (msg.message_type === 'image') imgUrlData[msg.id] = msg.content;
     }
 
     let html = '';
@@ -580,32 +702,70 @@
         inner = `<a href="${escHtml(msg.content)}" target="_blank"><img src="${escHtml(msg.content)}" alt="圖片" style="max-width:260px;max-height:260px;border-radius:8px;display:block"></a>`;
       } else if (msg.message_type === 'video') {
         inner = `<video controls style="max-width:260px;border-radius:8px;display:block"><source src="${escHtml(msg.content)}" type="video/mp4"></video>`;
+      } else if (msg.message_type === 'file') {
+        const fn = escHtml(msg.content.split('/').pop());
+        inner = `<a href="${escHtml(msg.content)}" target="_blank" class="text-decoration-none text-dark d-flex align-items-center gap-2 py-1">
+          <i class="${fileIcon(msg.content.split('/').pop(), false)}"></i>
+          <div><div class="small fw-semibold" style="word-break:break-all">${fn}</div><div style="font-size:0.7rem;color:#888">點此下載</div></div>
+        </a>`;
       } else {
         inner = escHtml(msg.content);
+      }
+      let inQuoteHtml = '';
+      if (msg.quote) {
+        inQuoteHtml = `<div class="mb-2 px-2 py-1 rounded" style="background:#f0f0f0;border-left:3px solid #aaa">`;
+        if (msg.quote.sender) inQuoteHtml += `<div class="fw-bold" style="font-size:0.72rem;color:#555">${escHtml(msg.quote.sender)}</div>`;
+        const qp = msg.quote.preview || '';
+        if (qp.startsWith('/static/images/')) {
+          inQuoteHtml += `<img src="${escHtml(qp)}" style="height:48px;width:48px;object-fit:cover;border-radius:4px;display:block;margin-top:2px">`;
+        } else {
+          inQuoteHtml += `<div style="font-size:0.8rem;color:#666">${escHtml(qp)}</div>`;
+        }
+        inQuoteHtml += `</div>`;
       }
       html += `<div id="msg-${msg.id}" class="d-flex align-items-end gap-2 mb-2">
         <i class="bi bi-person-circle fs-4 text-muted flex-shrink-0"></i>
         <div>
           <div class="small text-muted mb-1">${escHtml(selectedUserName)}</div>
-          <div class="rounded-3 px-3 py-2 d-inline-block shadow-sm" style="background:#fff;max-width:320px;word-break:break-word">${inner}</div>
+          <div class="rounded-3 px-3 py-2 d-inline-block shadow-sm" style="background:#fff;max-width:320px;word-break:break-word">${inQuoteHtml}${inner}</div>
           <div class="d-flex align-items-center gap-2 mt-1">
             <span class="text-muted" style="font-size:0.7rem">${escHtml(msg.created_at)}</span>
             <button class="btn btn-link btn-sm py-0 px-0 text-muted" style="font-size:0.7rem;text-decoration:none"
-                    onclick="quoteReply(msgData[${msg.id}])"><i class="bi bi-reply"></i> 回覆</button>
+                    onclick="quoteReply(msgData[${msg.id}], imgUrlData[${msg.id}])"><i class="bi bi-reply"></i> 回覆</button>
           </div>
         </div>
       </div>`;
-    } else if (msg.message_type === 'staff') {
+    } else if (['staff', 'staff_file', 'staff_image', 'staff_video'].includes(msg.message_type)) {
       let quoteHtml = '';
       if (msg.quote) {
         quoteHtml = `<div class="mb-2 px-2 py-1 rounded" style="background:rgba(255,255,255,0.22);border-left:3px solid rgba(255,255,255,0.75)">`;
         if (msg.quote.sender) quoteHtml += `<div class="fw-bold" style="font-size:0.72rem">${escHtml(msg.quote.sender)}</div>`;
-        quoteHtml += `<div style="font-size:0.8rem;opacity:0.92">${escHtml(msg.quote.preview)}</div></div>`;
+        const p = msg.quote.preview || '';
+        if (p.startsWith('/static/images/')) {
+          quoteHtml += `<img src="${escHtml(p)}" style="height:48px;width:48px;object-fit:cover;border-radius:4px;display:block">`;
+        } else {
+          quoteHtml += `<div style="font-size:0.8rem;opacity:0.92">${escHtml(p)}</div>`;
+        }
+        quoteHtml += `</div>`;
+      }
+      let bodyHtml;
+      if (msg.message_type === 'staff_file') {
+        const fn = escHtml(msg.content.split('/').pop());
+        bodyHtml = `<a href="${escHtml(msg.content)}" target="_blank" class="text-decoration-none text-white d-flex align-items-center gap-2 py-1">
+          <i class="${fileIcon(msg.content.split('/').pop(), true)}" style="opacity:0.9"></i>
+          <div><div class="small fw-semibold" style="word-break:break-all">${fn}</div><div style="font-size:0.7rem;opacity:0.75">點此下載</div></div>
+        </a>`;
+      } else if (msg.message_type === 'staff_image') {
+        bodyHtml = `<a href="${escHtml(msg.content)}" target="_blank"><img src="${escHtml(msg.content)}" alt="圖片" style="max-width:260px;max-height:260px;border-radius:8px;display:block"></a>`;
+      } else if (msg.message_type === 'staff_video') {
+        bodyHtml = `<video controls style="max-width:260px;border-radius:8px;display:block"><source src="${escHtml(msg.content)}" type="video/mp4"></video>`;
+      } else {
+        bodyHtml = escHtml(msg.content);
       }
       html += `<div id="msg-${msg.id}" class="d-flex align-items-end justify-content-end gap-2 mb-2">
         <div class="text-end">
           <div class="small text-muted mb-1">小編回覆</div>
-          <div class="rounded-3 px-3 py-2 d-inline-block shadow-sm text-start" style="background:#0d6efd;color:#fff;max-width:320px;word-break:break-word">${quoteHtml}${escHtml(msg.content)}</div>
+          <div class="rounded-3 px-3 py-2 d-inline-block shadow-sm text-start" style="background:#0d6efd;color:#fff;max-width:320px;word-break:break-word">${quoteHtml}${bodyHtml}</div>
           <div class="text-muted mt-1" style="font-size:0.7rem">${escHtml(msg.created_at)}</div>
         </div>
         <i class="bi bi-person-badge fs-4 flex-shrink-0 text-primary"></i>

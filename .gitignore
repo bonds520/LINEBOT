@@ -16,8 +16,9 @@ build/
 *.db
 *.sqlite3
 
-# 用戶上傳媒體（由 LINE Content API 下載，不納入版控）
+# 用戶上傳媒體與檔案（由 LINE Content API 下載或小編上傳，不納入版控）
 static/images/
+static/files/
 
 # 系統
 .DS_Store

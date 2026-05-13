@@ -35,6 +35,7 @@ class MessageLog(Base):
     direction = Column(Enum("incoming", "outgoing"), nullable=False)
     message_type = Column(String(32), nullable=False)
     content = Column(Text, nullable=True)
+    line_message_id = Column(String(64), nullable=True, index=True)
     created_at = Column(DateTime, server_default=func.now())
 
 

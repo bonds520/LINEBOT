@@ -1,5 +1,8 @@
 import csv
 import io
+import os
+import re
+import uuid
 from datetime import datetime
 from fastapi import APIRouter, Depends, Request, Form, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse, JSONResponse
@@ -503,10 +506,10 @@ def history_poll(
     if not messages:
         return JSONResponse({"messages": []})
 
-    staff_ids = [m.id for m in messages if m.message_type == "staff"]
+    all_ids = [m.id for m in messages]
     quote_map = {}
-    if staff_ids:
-        quotes = db.query(MessageQuote).filter(MessageQuote.message_log_id.in_(staff_ids)).all()
+    if all_ids:
+        quotes = db.query(MessageQuote).filter(MessageQuote.message_log_id.in_(all_ids)).all()
         quote_map = {q.message_log_id: q for q in quotes}
 
     result = []
@@ -597,26 +600,118 @@ def history_reply(
 
     has_quote = bool(quote_name.strip() and quote_text.strip())
     if has_quote:
-        preview = quote_text.strip()
-        if len(preview) > 50:
-            preview = preview[:50] + "…"
+        qt = quote_text.strip()
+        # 判斷是否為媒體 URL（圖片 / 影片 / 檔案）
+        _img_exts = ('jpg', 'jpeg', 'png', 'gif', 'webp')
+        _vid_exts = ('mp4', 'mov', 'avi', 'm4v')
+        _ext = qt.rsplit('.', 1)[-1].lower() if '.' in qt else ''
+        if qt.startswith('/static/images/') or qt.startswith('/files/'):
+            display = '[圖片]' if _ext in _img_exts else '[影片]' if _ext in _vid_exts else '[檔案]'
+        else:
+            display = qt if len(qt) <= 50 else qt[:50] + "…"
         # 傳送給 LINE 的文字加上引用提示；DB 僅存純回覆文字
-        line_text = f"「↩ {quote_name.strip()}：{preview}」\n{reply}"
+        line_text = f"「↩ {quote_name.strip()}：{display}」\n{reply}"
     else:
         line_text = reply
 
     try:
-        msg_log = push_message(line_user_id, line_text, db, msg_type="staff", log_content=reply)
+        _img_exts = ('jpg', 'jpeg', 'png', 'gif', 'webp')
+        _is_img_quote = (
+            has_quote
+            and qt.startswith('/static/images/')
+            and qt.rsplit('.', 1)[-1].lower() in _img_exts
+        )
+        if _is_img_quote:
+            from app.handlers import push_reply_with_image_quote
+            msg_log = push_reply_with_image_quote(
+                line_user_id, reply, quote_name.strip(), qt, db
+            )
+        else:
+            msg_log = push_message(line_user_id, line_text, db, msg_type="staff", log_content=reply)
         if has_quote and msg_log:
             db.add(MessageQuote(
                 message_log_id=msg_log.id,
                 quote_sender=quote_name.strip(),
-                quote_preview=quote_text.strip()[:200],
+                quote_preview=qt[:200],
             ))
             db.commit()
     except Exception as e:
         return RedirectResponse(
             url=f"/dashboard/history?line_user_id={line_user_id}&error={str(e)[:80]}",
+            status_code=302,
+        )
+    return RedirectResponse(
+        url=f"/dashboard/history?line_user_id={line_user_id}&replied=1",
+        status_code=302,
+    )
+
+
+# ── 從聊天記錄傳送檔案 ─────────────────────────────────────────
+IMAGE_EXTENSIONS = {'jpg', 'jpeg', 'png', 'gif', 'webp'}
+VIDEO_EXTENSIONS = {'mp4', 'mov', 'avi', 'm4v'}
+DOC_EXTENSIONS   = {'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'zip', 'rar', '7z', 'txt', 'csv'}
+ALLOWED_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS | DOC_EXTENSIONS
+
+@router.post("/dashboard/history/send_file")
+async def history_send_file(
+    line_user_id: str = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: SystemUser = Depends(current_user_dep),
+):
+    from app.handlers import push_file_message as _push_file
+    from app.handlers import push_image_message as _push_image
+    from app.handlers import push_video_message as _push_video
+
+    original_name = file.filename or "file"
+    ext = original_name.rsplit('.', 1)[-1].lower() if '.' in original_name else ''
+    if ext not in ALLOWED_EXTENSIONS:
+        return RedirectResponse(
+            url=f"/dashboard/history?line_user_id={line_user_id}&file_error=不支援的檔案類型",
+            status_code=302,
+        )
+
+    safe_name = re.sub(r'[^\w.\-]', '_', original_name).lstrip('.') or "file"
+    safe_name = safe_name[:200]
+    uid = uuid.uuid4().hex
+    tunnel_url = os.getenv("TUNNEL_URL", "").rstrip("/")
+    content_bytes = await file.read()
+
+    try:
+        if ext in IMAGE_EXTENSIONS:
+            save_dir = os.path.join(os.path.dirname(__file__), "..", "static", "images")
+            os.makedirs(save_dir, exist_ok=True)
+            filename = f"{uid}.{ext}"
+            with open(os.path.join(save_dir, filename), "wb") as f:
+                f.write(content_bytes)
+            local_url  = f"/static/images/{filename}"
+            public_url = f"{tunnel_url}{local_url}" if tunnel_url else local_url
+            _push_image(line_user_id, local_url, public_url, db)
+
+        elif ext in VIDEO_EXTENSIONS:
+            save_dir = os.path.join(os.path.dirname(__file__), "..", "static", "images")
+            os.makedirs(save_dir, exist_ok=True)
+            filename = f"{uid}.{ext}"
+            with open(os.path.join(save_dir, filename), "wb") as f:
+                f.write(content_bytes)
+            local_url      = f"/static/images/{filename}"
+            public_url     = f"{tunnel_url}{local_url}" if tunnel_url else local_url
+            thumb_pub_url  = f"{tunnel_url}/static/images/_video_thumb.png" if tunnel_url else "/static/images/_video_thumb.png"
+            _push_video(line_user_id, local_url, public_url, thumb_pub_url, db)
+
+        else:
+            dir_id   = uid
+            save_dir = os.path.join(os.path.dirname(__file__), "..", "static", "files", dir_id)
+            os.makedirs(save_dir, exist_ok=True)
+            with open(os.path.join(save_dir, safe_name), "wb") as f:
+                f.write(content_bytes)
+            file_url   = f"/files/download/{dir_id}/{safe_name}"
+            public_url = f"{tunnel_url}{file_url}" if tunnel_url else file_url
+            _push_file(line_user_id, original_name, file_url, public_url, len(content_bytes), db)
+
+    except Exception as e:
+        return RedirectResponse(
+            url=f"/dashboard/history?line_user_id={line_user_id}&file_error={str(e)[:80]}",
             status_code=302,
         )
     return RedirectResponse(

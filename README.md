@@ -16,11 +16,12 @@ Cloudflare Tunnel (cloudflared)
     │  HTTP 內部轉發
     ▼
 FastAPI + Uvicorn (0.0.0.0:8000)
-    ├── /webhook          ← LINE Webhook 端點
-    ├── /admin/*          ← 管理員後台
-    ├── /dashboard/*      ← 小編使用者後台
-    ├── /static/*         ← 靜態檔案（用戶上傳圖片/影片）
-    └── /login            ← 使用者登入
+    ├── /webhook                        ← LINE Webhook 端點
+    ├── /admin/*                        ← 管理員後台
+    ├── /dashboard/*                    ← 小編使用者後台
+    ├── /static/*                       ← 靜態檔案（圖片/影片，由 Nginx 直接提供）
+    ├── /files/download/{dir_id}/{name} ← 強制下載端點（Content-Disposition: attachment）
+    └── /login                          ← 使用者登入
     │
     ▼
 MySQL 8.0 (localhost:3306)
@@ -115,8 +116,9 @@ Database: linebot
 | id | INT | 主鍵 |
 | line_user_id | VARCHAR(64) | LINE 用戶 ID |
 | direction | ENUM | incoming / outgoing |
-| message_type | VARCHAR(32) | 訊息類型（text / image / video / staff） |
-| content | TEXT | 訊息內容；image/video 為 `/static/images/` 檔案路徑 |
+| message_type | VARCHAR(32) | 訊息類型（text / image / video / file / staff / staff_image / staff_video / staff_file） |
+| content | TEXT | 訊息內容；媒體訊息為本地路徑；file 為 `/files/download/` 路徑 |
+| line_message_id | VARCHAR(64) | LINE 平台回傳的訊息 ID（outgoing 訊息用於追蹤引用） |
 | created_at | DATETIME | 建立時間 |
 
 ### `qa_pairs` — Q&A 問答對
@@ -191,11 +193,12 @@ Database: linebot
 | 欄位 | 類型 | 說明 |
 |------|------|------|
 | id | INT | 主鍵 |
-| message_log_id | INT | 關聯 MessageLog.id（小編回覆訊息） |
+| message_log_id | INT | 關聯 MessageLog.id（小編回覆訊息或用戶引用回覆訊息） |
 | quote_sender | VARCHAR(255) | 被引用訊息的發送者名稱 |
-| quote_preview | TEXT | 被引用的訊息內容（最多 200 字） |
+| quote_preview | TEXT | 被引用的訊息內容（文字最多 200 字；圖片為 `/static/images/` 路徑） |
 
-> `push_message()` 現在回傳 `MessageLog` 物件，並支援 `log_content` 參數（傳送給 LINE 的文字與儲存至 DB 的文字可分離）。
+> - `push_message()` 回傳 `MessageLog` 物件，支援 `log_content` 參數（傳送給 LINE 的文字與儲存至 DB 的文字可分離）。  
+> - 小編回覆時（outgoing）與 LINE 用戶引用回覆時（incoming）均會建立 `MessageQuote` 記錄。
 
 ### `system_users` — 系統使用者
 
@@ -218,7 +221,11 @@ Database: linebot
 用戶傳訊息
     │
     ├── 文字訊息 ──────────────────────────────────────────────────┐
-    │                                                              │
+    │   │                                                          │
+    │   ├─ (有 quoted_message_id) ─► 查找對應 line_message_id      │
+    │   │                            建立 MessageQuote（incoming）  │
+    │   │                                                          │
+    │   ▼                                                          │
     │   自動呼叫 LINE Profile API 取得用戶顯示名稱與頭貼              │
     │       │                                                      │
     │       ▼                                                      │
@@ -229,14 +236,14 @@ Database: linebot
     │       └── 未找到   ──► 回覆「轉交客服」通知 + 記錄待回覆清單    │
     │                                                              ▼
     ├── 圖片訊息 ──► 呼叫 LINE Content API 下載原圖                 │
-    │               │                                             │
-    │               ▼                                             │
-    │           儲存至 /static/images/<uuid>.jpg                  │
-    │               │                                             │
-    │               ▼                                             │
-    │           記錄 MessageLog（type=image, content=檔案路徑）     │
-    │                                                             │
-    └── 影片訊息 ──► 同上流程，儲存為 .mp4，type=video             ◄┘
+    │               儲存至 /static/images/<uuid>.jpg               │
+    │               記錄 MessageLog（type=image）                  │
+    │                                                              │
+    ├── 影片訊息 ──► 同上流程，儲存為 .mp4（type=video）            ◄┘
+    │
+    └── 檔案訊息 ──► 呼叫 LINE Content API 下載原始檔案
+                    儲存至 /static/files/<dir_id>/<safe_name>
+                    記錄 MessageLog（type=file, content=/files/download/...）
 ```
 
 ### 人工回覆流程
@@ -315,8 +322,13 @@ Database: linebot
 | 功能 | 說明 |
 |------|------|
 | 直接回覆 | 聊天記錄底部輸入框可直接傳送 LINE 訊息給用戶，無須跳轉至待回覆清單 |
-| 引用回覆 | 點用戶訊息旁「↩ 回覆」，顯示引用提示列後輸入回覆；聊天記錄以仿 LINE 引用氣泡樣式顯示（白色半透明引用區塊 + 左側線條），LINE 用戶收到帶引用前綴的純文字訊息 |
-| 圖片/影片回覆 | 圖片、影片訊息同樣有「↩ 回覆」按鈕，引用內容顯示為 `[圖片]` 或 `[影片]` |
+| 引用回覆（文字） | 點用戶訊息旁「↩ 回覆」，顯示引用提示列後輸入回覆；聊天記錄以仿 LINE 引用氣泡樣式顯示，LINE 用戶收到帶引用前綴的純文字訊息 |
+| 引用回覆（圖片） | 引用圖片訊息時，輸入列顯示縮圖預覽；LINE 用戶收到 FlexMessage（含圖片縮圖 + 送件者標示 + 回覆文字） |
+| 影片/檔案引用回覆 | 影片顯示 `[影片]`、檔案顯示 `[檔案]` 佔位文字 |
+| 用戶引用回覆顯示 | LINE 用戶若引用小編訊息回覆，聊天記錄自動顯示被引用的原始內容（文字截段或圖片縮圖） |
+| 傳送圖片 | 小編可上傳 JPG/PNG/GIF/WebP，透過 LINE ImageMessage 傳送給用戶 |
+| 傳送影片 | 小編可上傳 MP4/MOV/AVI/M4V，透過 LINE VideoMessage 傳送給用戶 |
+| 傳送文件 | 小編可上傳 PDF/DOC/DOCX/XLS/XLSX/PPT/PPTX/ZIP/RAR/7Z/TXT/CSV，以 FlexMessage 卡片形式傳送（含檔案圖示、大小、下載按鈕） |
 | 預設訊息套用 | 回覆輸入區點「預設訊息」選取已建立的模板，一鍵填入 textarea |
 | 待回覆清單預設訊息 | 回覆 Modal 內含「套用預設訊息」下拉選單，快速套用常用回覆 |
 
@@ -666,4 +678,17 @@ TUNNEL_URL=https://xxx.trycloudflare.com
 
 ---
 
-*文件最後更新：2026-05-13（新增圖片/影片訊息接收與顯示、圖片/影片引用回覆（`[圖片]`/`[影片]` 佔位）、聊天記錄每 8 秒自動輪詢更新、VideoMessageContent 處理；靜態檔案掛載至 `/static`；新增 `/dashboard/history/poll` API）*
+*文件最後更新：2026-05-13*
+
+### 主要功能更新記錄
+
+| 版本/日期 | 更新內容 |
+|-----------|---------|
+| 2026-05-13（最新） | 新增 LINE 用戶引用回覆追蹤（`line_message_id` + `MessageQuote` for incoming）；聊天記錄顯示用戶引用的被引用內容（含圖片縮圖）；引用圖片回覆改以 FlexMessage 傳送（含縮圖） |
+| 2026-05-13 | 新增文件接收支援（DOC/XLS/PDF/ZIP 等）；小編可傳送圖片/影片/文件；文件以 FlexMessage 卡片顯示；新增強制下載端點 `/files/download/` |
+| 2026-05-13 | 新增聊天記錄引用回覆功能（`MessageQuote` 資料表）；圖片引用於輸入列顯示縮圖預覽；聊天記錄氣泡顯示引用區塊 |
+| 2026-05-13 | 新增圖片/影片訊息接收與顯示；聊天記錄每 8 秒自動輪詢更新；新增 `/dashboard/history/poll` API |
+| 2026-05-12 | 新增聊天記錄搜尋功能與跳轉定位精確度修正（以 MessageLog.id 錨定） |
+| 2026-05-12 | 新增用戶標籤系統（自訂名稱/顏色）、用戶備註、聊天記錄跳轉定位 |
+| 2026-05-11 | 新增 Q&A 刪除功能；Q&A 匯出/匯入改善（含 is_active/is_trained 欄位） |
+| 2026-05-10 | 新增待辦事項、預設訊息、LINE Push 回覆、多項小編後台功能 |
