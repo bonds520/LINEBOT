@@ -1,6 +1,7 @@
 # LINEBOT 系統架構文件
 
 > LINE Bot 自動回覆系統，提供 Q&A 知識庫管理、小編訓練後台與 Cloudflare Tunnel HTTPS 接入。
+> **feature/dify-integration 分支**：整合 Dify AI 平台，支援 AI 智能問答回覆（可切換）。
 
 ---
 
@@ -23,14 +24,36 @@ FastAPI + Uvicorn (0.0.0.0:8000)
     ├── /files/download/{dir_id}/{name} ← 強制下載端點（Content-Disposition: attachment）
     └── /login                          ← 使用者登入
     │
-    ▼
-MySQL 8.0 (localhost:3306)
-Database: linebot
+    ├──► MySQL 8.0 (localhost:3306)          ← Q&A 知識庫 / 訊息記錄
+    │    Database: linebot
+    │
+    └──► Dify AI Platform (localhost:8080)   ← USE_DIFY=true 時啟用
+         ├── LLM：Gemini 2.5 Flash
+         ├── Embedding：gemini-embedding-2-preview
+         ├── 知識庫（倒排索引 FAQ）
+         └── Docker Compose 服務群（Port 8080）
+              ├── api / worker（langgenius/dify-api:latest）
+              ├── plugin_daemon（dify-plugin-daemon:0.6.0-local）
+              ├── web / nginx
+              ├── PostgreSQL 15（dify + dify_plugin 資料庫）
+              ├── Redis 7
+              └── Weaviate 1.27.0（向量資料庫）
+```
+
+### 回覆模式切換
+
+由 `.env` 的 `USE_DIFY` 控制，**無須修改程式碼**：
+
+```
+USE_DIFY=false  →  模糊比對 Q&A（rapidfuzz，相似度 ≥ 60%）
+USE_DIFY=true   →  Dify AI 回覆（知識庫 RAG + LLM 生成）
 ```
 
 ---
 
 ## 技術堆疊
+
+### LINE Bot 核心
 
 | 層級 | 技術 | 版本 |
 |------|------|------|
@@ -41,12 +64,26 @@ Database: linebot
 | 資料庫 | MySQL | 8.0.45 |
 | ORM | SQLAlchemy | 2.0.49 |
 | 模糊比對 | rapidfuzz | 3.14.5 |
+| HTTP 客戶端 | httpx | 0.28.1 |
 | 模板引擎 | Jinja2 | 3.1.6 |
 | 密碼加密 | passlib + bcrypt | 1.7.4 / 4.0.1 |
 | HTTPS 通道 | Cloudflare Tunnel | 2026.3.0 |
 | 反向代理 | Nginx | — |
 | 作業系統 | Ubuntu 24.04.4 LTS | — |
 | 虛擬化 | VMware | — |
+
+### Dify AI 平台（feature/dify-integration）
+
+| 元件 | 技術 | 說明 |
+|------|------|------|
+| AI 平台 | Dify | 1.14.x（Docker Compose） |
+| LLM | Google Gemini 2.5 Flash | 對話生成 |
+| Embedding | gemini-embedding-2-preview | 知識庫向量化 |
+| 向量資料庫 | Weaviate | 1.27.0 |
+| 關聯資料庫 | PostgreSQL | 15-alpine |
+| 快取/佇列 | Redis | 7-alpine |
+| 插件系統 | dify-plugin-daemon | 0.6.0-local |
+| 知識庫索引 | 倒排索引（經濟模式） | Jieba 中文分詞 |
 
 ---
 
@@ -60,6 +97,7 @@ Database: linebot
 │   ├── models.py            # 資料庫模型定義
 │   ├── handlers.py          # LINE 事件處理（訊息、加好友、封鎖）
 │   ├── matcher.py           # 關鍵字模糊比對邏輯
+│   ├── dify_client.py       # Dify Chat API 客戶端（USE_DIFY=true 時使用）
 │   ├── auth.py              # 使用者認證、Session 管理、密碼雜湊
 │   ├── admin.py             # 管理員後台路由
 │   └── user_panel.py        # 小編使用者後台路由
@@ -85,6 +123,12 @@ Database: linebot
 │   └── user_todo_create.html # 新增待辦事項
 ├── static/
 │   └── images/              # 用戶傳入的圖片/影片（LINE Content API 下載儲存）
+├── dify/                    # Dify AI 平台（feature/dify-integration）
+│   ├── docker-compose.yml   # Dify 完整服務定義（8 個容器）
+│   ├── .env.example         # Dify 環境變數範本
+│   ├── setup.sh             # Dify 一鍵安裝腳本
+│   └── nginx/
+│       └── dify_nginx.conf  # Dify 對外 Nginx 設定（Port 8080）
 ├── backups/                 # 資料庫備份存放目錄
 ├── .env                     # 環境變數（不納入版控）
 ├── .env.example             # 環境變數範本
@@ -375,12 +419,14 @@ Database: linebot
 | 管理員後台 | `http://192.168.31.89/admin` |
 | LINE Webhook | `https://<cloudflare-tunnel-url>/webhook` |
 | 健康檢查 | `http://192.168.31.89/health` |
+| **Dify 管理介面** | `http://192.168.31.89:8080` |
+| **Dify API** | `http://192.168.31.89:8080/v1` |
 
 ---
 
 ## 系統服務
 
-四個服務均設定為**開機自動啟動**：
+五個服務均設定為**開機自動啟動**：
 
 | 服務 | 說明 |
 |------|------|
@@ -388,18 +434,26 @@ Database: linebot
 | `nginx` | 反向代理（Port 80 → 8000） |
 | `mysql` | 資料庫 |
 | `cloudflared` | Cloudflare Tunnel + 自動更新 Webhook |
+| `dify` | Dify AI 平台（Docker Compose，Port 8080） |
 
 ```bash
 # 查看所有服務狀態
-sudo systemctl status linebot nginx mysql cloudflared
+sudo systemctl status linebot nginx mysql cloudflared dify
 
 # 重啟個別服務
 sudo systemctl restart linebot.service
 sudo systemctl restart cloudflared.service
+sudo systemctl restart dify.service
 
 # 查看服務即時日誌
 journalctl -u linebot.service -f
 journalctl -u cloudflared.service -f
+
+# Dify Docker 容器管理
+cd /opt/linebot/dify
+docker compose ps                  # 查看所有容器狀態
+docker compose logs -f api         # 查看 API 容器日誌
+docker compose logs -f worker      # 查看 Worker 容器日誌
 ```
 
 ---
@@ -662,7 +716,15 @@ DEBUG=false
 
 # Cloudflare Tunnel URL（自動更新）
 TUNNEL_URL=https://xxx.trycloudflare.com
+
+# Dify AI 整合（feature/dify-integration）
+# USE_DIFY=false → 使用模糊比對 Q&A；USE_DIFY=true → 使用 Dify AI 回覆
+USE_DIFY=false
+DIFY_API_URL=http://localhost:8080/v1
+DIFY_API_KEY=your-dify-app-api-key
 ```
+
+> **Dify `.env` 設定**：位於 `/opt/linebot/dify/.env`（不納入版控），參考 `dify/.env.example`。
 
 ---
 
@@ -678,13 +740,14 @@ TUNNEL_URL=https://xxx.trycloudflare.com
 
 ---
 
-*文件最後更新：2026-05-13*
+*文件最後更新：2026-05-18*
 
 ### 主要功能更新記錄
 
 | 版本/日期 | 更新內容 |
 |-----------|---------|
-| 2026-05-13（最新） | 新增 LINE 用戶引用回覆追蹤（`line_message_id` + `MessageQuote` for incoming）；聊天記錄顯示用戶引用的被引用內容（含圖片縮圖）；引用圖片回覆改以 FlexMessage 傳送（含縮圖） |
+| 2026-05-18（最新） | **feature/dify-integration**：整合 Dify AI 平台（Docker Compose 8 容器）；新增 `app/dify_client.py` Dify Chat API 客戶端；`USE_DIFY` 環境變數切換 AI/Q&A 回覆模式；新增 `dify/` 目錄（docker-compose.yml、setup.sh、nginx 設定）；Celery Broker 明確指定 Redis；Weaviate 升級至 1.27.0；新增 `dify` systemd 服務開機自啟 |
+| 2026-05-13 | 新增 LINE 用戶引用回覆追蹤（`line_message_id` + `MessageQuote` for incoming）；聊天記錄顯示用戶引用的被引用內容（含圖片縮圖）；引用圖片回覆改以 FlexMessage 傳送（含縮圖） |
 | 2026-05-13 | 新增文件接收支援（DOC/XLS/PDF/ZIP 等）；小編可傳送圖片/影片/文件；文件以 FlexMessage 卡片顯示；新增強制下載端點 `/files/download/` |
 | 2026-05-13 | 新增聊天記錄引用回覆功能（`MessageQuote` 資料表）；圖片引用於輸入列顯示縮圖預覽；聊天記錄氣泡顯示引用區塊 |
 | 2026-05-13 | 新增圖片/影片訊息接收與顯示；聊天記錄每 8 秒自動輪詢更新；新增 `/dashboard/history/poll` API |
