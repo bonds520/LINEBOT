@@ -35,6 +35,8 @@ services:
       WEAVIATE_API_KEY: ${DIFY_WEAVIATE_API_KEY:-WVF5YThaHlkYwhGUSmCRgsX3}
       STORAGE_TYPE: local
       STORAGE_LOCAL_PATH: /app/api/storage
+      # Celery Broker（明確指定使用 Redis，避免回退至 AMQP）
+      CELERY_BROKER_URL: redis://:${DIFY_REDIS_PASSWORD:-difyai123456}@redis:6379/1
       # Plugin Daemon 串接
       PLUGIN_DAEMON_URL: http://plugin_daemon:5002
       PLUGIN_DAEMON_KEY: ${DIFY_PLUGIN_DAEMON_KEY:-lYkiYYT6owG+71oLerGzA7GXCgOT++6ovaezWAjpCjf+Sjc3ZtU+qUEi}
@@ -70,6 +72,7 @@ services:
       WEAVIATE_API_KEY: ${DIFY_WEAVIATE_API_KEY:-WVF5YThaHlkYwhGUSmCRgsX3}
       STORAGE_TYPE: local
       STORAGE_LOCAL_PATH: /app/api/storage
+      CELERY_BROKER_URL: redis://:${DIFY_REDIS_PASSWORD:-difyai123456}@redis:6379/1
       PLUGIN_DAEMON_URL: http://plugin_daemon:5002
       PLUGIN_DAEMON_KEY: ${DIFY_PLUGIN_DAEMON_KEY:-lYkiYYT6owG+71oLerGzA7GXCgOT++6ovaezWAjpCjf+Sjc3ZtU+qUEi}
       INNER_API_KEY_FOR_PLUGIN: ${DIFY_PLUGIN_INNER_API_KEY:-QaHbTe77CtuXmsfyhR7+vRjI/+XbV1AaFy691iy+kGDv2Jvy0/eAh8Y1}
