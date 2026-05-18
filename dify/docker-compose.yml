@@ -1,0 +1,161 @@
+version: "3.8"
+
+# Dify 服務群組
+# 啟動：docker compose -f dify/docker-compose.yml up -d
+# 停止：docker compose -f dify/docker-compose.yml down
+#
+# 對外 Port：EXPOSE_NGINX_PORT（預設 8080，避開 LINE Bot 的 80）
+# 管理介面：http://192.168.31.89:8080
+
+services:
+
+  # ── API ────────────────────────────────────────────────────────
+  api:
+    image: langgenius/dify-api:latest
+    restart: always
+    environment:
+      MODE: api
+      SECRET_KEY: ${DIFY_SECRET_KEY}
+      CONSOLE_API_URL: ${DIFY_CONSOLE_API_URL:-}
+      CONSOLE_WEB_URL: ${DIFY_CONSOLE_WEB_URL:-}
+      SERVICE_API_URL: ${DIFY_SERVICE_API_URL:-}
+      APP_WEB_URL: ${DIFY_APP_WEB_URL:-}
+      LOG_LEVEL: INFO
+      DB_USERNAME: postgres
+      DB_PASSWORD: ${DIFY_DB_PASSWORD:-difyai123456}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_DATABASE: dify
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${DIFY_REDIS_PASSWORD:-difyai123456}
+      VECTOR_STORE: ${DIFY_VECTOR_STORE:-weaviate}
+      WEAVIATE_ENDPOINT: http://weaviate:8080
+      WEAVIATE_API_KEY: ${DIFY_WEAVIATE_API_KEY:-WVF5YThaHlkYwhGUSmCRgsX3}
+      STORAGE_TYPE: local
+      STORAGE_LOCAL_PATH: /app/api/storage
+    volumes:
+      - dify_api_storage:/app/api/storage
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - dify_net
+
+  # ── Worker ─────────────────────────────────────────────────────
+  worker:
+    image: langgenius/dify-api:latest
+    restart: always
+    environment:
+      MODE: worker
+      SECRET_KEY: ${DIFY_SECRET_KEY}
+      DB_USERNAME: postgres
+      DB_PASSWORD: ${DIFY_DB_PASSWORD:-difyai123456}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_DATABASE: dify
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${DIFY_REDIS_PASSWORD:-difyai123456}
+      VECTOR_STORE: ${DIFY_VECTOR_STORE:-weaviate}
+      WEAVIATE_ENDPOINT: http://weaviate:8080
+      WEAVIATE_API_KEY: ${DIFY_WEAVIATE_API_KEY:-WVF5YThaHlkYwhGUSmCRgsX3}
+      STORAGE_TYPE: local
+      STORAGE_LOCAL_PATH: /app/api/storage
+    volumes:
+      - dify_api_storage:/app/api/storage
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - dify_net
+
+  # ── Web UI ─────────────────────────────────────────────────────
+  web:
+    image: langgenius/dify-web:latest
+    restart: always
+    environment:
+      CONSOLE_API_URL: ${DIFY_CONSOLE_API_URL:-}
+      APP_API_URL: ${DIFY_SERVICE_API_URL:-}
+    networks:
+      - dify_net
+
+  # ── Nginx（對外，host port 8080） ───────────────────────────────
+  nginx:
+    image: nginx:alpine
+    restart: always
+    ports:
+      - "${EXPOSE_DIFY_PORT:-8080}:80"
+    volumes:
+      - ./nginx/dify_nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+      - web
+    networks:
+      - dify_net
+
+  # ── PostgreSQL ─────────────────────────────────────────────────
+  db:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DIFY_DB_PASSWORD:-difyai123456}
+      POSTGRES_DB: dify
+    volumes:
+      - dify_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - dify_net
+
+  # ── Redis ──────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: always
+    command: redis-server --requirepass ${DIFY_REDIS_PASSWORD:-difyai123456}
+    volumes:
+      - dify_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${DIFY_REDIS_PASSWORD:-difyai123456}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - dify_net
+
+  # ── Weaviate（向量資料庫） ──────────────────────────────────────
+  weaviate:
+    image: semitechnologies/weaviate:1.19.0
+    restart: always
+    environment:
+      QUERY_DEFAULTS_LIMIT: 25
+      AUTHENTICATION_APIKEY_ENABLED: "true"
+      AUTHENTICATION_APIKEY_ALLOWED_KEYS: ${DIFY_WEAVIATE_API_KEY:-WVF5YThaHlkYwhGUSmCRgsX3}
+      AUTHENTICATION_APIKEY_USERS: hello@dify.ai
+      AUTHORIZATION_ADMINLIST_ENABLED: "true"
+      AUTHORIZATION_ADMINLIST_USERS: hello@dify.ai
+      PERSISTENCE_DATA_PATH: /var/lib/weaviate
+      DEFAULT_VECTORIZER_MODULE: none
+      CLUSTER_HOSTNAME: node1
+    volumes:
+      - dify_weaviate_data:/var/lib/weaviate
+    networks:
+      - dify_net
+
+volumes:
+  dify_pg_data:
+  dify_redis_data:
+  dify_api_storage:
+  dify_weaviate_data:
+
+networks:
+  dify_net:
+    driver: bridge

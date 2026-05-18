@@ -91,22 +91,31 @@ def handle_text_message(event, db: Session):
             ))
             db.commit()
 
-    result = find_best_match(text, db)
+    # ── 回覆邏輯：USE_DIFY=true 走 Dify AI，否則走現有 Q&A 比對 ──
+    use_dify = os.getenv("USE_DIFY", "false").lower() == "true"
 
-    if result:
-        qa, score = result
-        reply_text = qa.answer
-        qa.hit_count += 1
-        db.commit()
+    if use_dify:
+        from app.dify_client import chat as dify_chat
+        reply_text = dify_chat(user_id, text)
+        if not reply_text:
+            # Dify 失敗時 fallback 至 Q&A
+            reply_text = "系統暫時無法回應，請稍後再試。"
     else:
-        reply_text = "您的問題已收到，將由客服人員儘快為您回覆，感謝您的耐心等候！"
-        pending = PendingQuestion(
-            line_user_id=user_id,
-            display_name=user.display_name if user else None,
-            question=text,
-        )
-        db.add(pending)
-        db.commit()
+        result = find_best_match(text, db)
+        if result:
+            qa, score = result
+            reply_text = qa.answer
+            qa.hit_count += 1
+            db.commit()
+        else:
+            reply_text = "您的問題已收到，將由客服人員儘快為您回覆，感謝您的耐心等候！"
+            pending = PendingQuestion(
+                line_user_id=user_id,
+                display_name=user.display_name if user else None,
+                question=text,
+            )
+            db.add(pending)
+            db.commit()
 
     resp = messaging_api.reply_message(
         ReplyMessageRequest(
