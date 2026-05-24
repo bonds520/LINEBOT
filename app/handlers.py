@@ -97,9 +97,16 @@ def handle_text_message(event, db: Session):
     if use_dify:
         from app.dify_client import chat as dify_chat
         reply_text = dify_chat(user_id, text)
-        if not reply_text:
-            # Dify 失敗時 fallback 至 Q&A
-            reply_text = "系統暫時無法回應，請稍後再試。"
+        if not reply_text or "【轉人工客服】" in reply_text:
+            # Dify 無法回答或明確要求轉人工 → 進入待回覆流程
+            reply_text = "您的問題已收到，將由客服人員儘快為您回覆，感謝您的耐心等候！"
+            pending = PendingQuestion(
+                line_user_id=user_id,
+                display_name=user.display_name if user else None,
+                question=text,
+            )
+            db.add(pending)
+            db.commit()
     else:
         result = find_best_match(text, db)
         if result:
