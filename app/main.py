@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException, Depends
+from fastapi import FastAPI, Request, HTTPException, Depends, BackgroundTasks
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
@@ -67,7 +67,7 @@ def file_download(dir_id: str, filename: str):
 
 
 @app.post("/webhook")
-async def webhook(request: Request, db: Session = Depends(get_db)):
+async def webhook(request: Request, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     signature = request.headers.get("X-Line-Signature", "")
     body = await request.body()
 
@@ -82,11 +82,17 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
             if isinstance(event, MessageEvent) and isinstance(event.message, TextMessageContent):
                 handlers.handle_text_message(event, db)
             elif isinstance(event, MessageEvent) and isinstance(event.message, ImageMessageContent):
-                handlers.handle_image_message(event, db)
+                result = handlers.handle_image_message(event, db)
+                if result and result[0]:
+                    file_path, user_id, log_id = result
+                    background_tasks.add_task(handlers.run_ocr_and_notify, user_id, file_path, log_id)
             elif isinstance(event, MessageEvent) and isinstance(event.message, VideoMessageContent):
                 handlers.handle_video_message(event, db)
             elif isinstance(event, MessageEvent) and isinstance(event.message, FileMessageContent):
-                handlers.handle_file_message(event, db)
+                result = handlers.handle_file_message(event, db)
+                if result and result[0]:
+                    file_path, user_id, log_id = result
+                    background_tasks.add_task(handlers.run_ocr_and_notify, user_id, file_path, log_id)
             elif isinstance(event, FollowEvent):
                 handlers.handle_follow_event(event, db)
             elif isinstance(event, UnfollowEvent):

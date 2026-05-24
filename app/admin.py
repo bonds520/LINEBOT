@@ -8,6 +8,7 @@ import secrets
 import subprocess
 import time
 import httpx
+from datetime import datetime, timedelta
 from pathlib import Path
 from fastapi import APIRouter, Depends, Request, Form, UploadFile, File, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
@@ -15,20 +16,26 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.database import get_db
-from app.models import QAPair, PendingQuestion, MessageLog, LineUser, SystemUser
+from app.models import QAPair, PendingQuestion, MessageLog, LineUser, SystemUser, SystemSession
 from app.auth import hash_password
 
 router = APIRouter(prefix="/admin")
 templates = Jinja2Templates(directory="templates")
 
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin1234")
-SESSION_TOKEN = secrets.token_hex(32)
-_sessions: set = set()
+SESSION_TTL_HOURS = 24
 
 
-def check_auth(request: Request):
+def check_auth(request: Request, db: Session = Depends(get_db)):
     token = request.cookies.get("admin_token")
-    if token not in _sessions:
+    if not token:
+        raise HTTPException(status_code=302, headers={"Location": "/admin/login"})
+    session = db.query(SystemSession).filter(
+        SystemSession.token == token,
+        SystemSession.role == "admin",
+        SystemSession.expires_at > datetime.utcnow(),
+    ).first()
+    if not session:
         raise HTTPException(status_code=302, headers={"Location": "/admin/login"})
     return True
 
@@ -39,10 +46,17 @@ def login_page(request: Request):
 
 
 @router.post("/login")
-def do_login(request: Request, password: str = Form(...)):
+def do_login(request: Request, password: str = Form(...), db: Session = Depends(get_db)):
     if password == ADMIN_PASSWORD:
         token = secrets.token_hex(32)
-        _sessions.add(token)
+        expires_at = datetime.utcnow() + timedelta(hours=SESSION_TTL_HOURS)
+        db.add(SystemSession(token=token, user_id=0, role="admin", expires_at=expires_at))
+        # 清除舊過期的 admin session
+        db.query(SystemSession).filter(
+            SystemSession.role == "admin",
+            SystemSession.expires_at <= datetime.utcnow(),
+        ).delete()
+        db.commit()
         resp = RedirectResponse(url="/admin", status_code=302)
         resp.set_cookie("admin_token", token, httponly=True, max_age=86400)
         return resp
@@ -50,9 +64,11 @@ def do_login(request: Request, password: str = Form(...)):
 
 
 @router.get("/logout")
-def logout(request: Request):
+def logout(request: Request, db: Session = Depends(get_db)):
     token = request.cookies.get("admin_token")
-    _sessions.discard(token)
+    if token:
+        db.query(SystemSession).filter(SystemSession.token == token).delete()
+        db.commit()
     resp = RedirectResponse(url="/admin/login", status_code=302)
     resp.delete_cookie("admin_token")
     return resp

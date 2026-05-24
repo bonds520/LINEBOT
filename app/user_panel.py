@@ -39,16 +39,17 @@ def do_login(request: Request, username: str = Form(...), password: str = Form(.
     user = db.query(SystemUser).filter(SystemUser.username == username, SystemUser.is_active == True).first()
     if not user or not verify_password(password, user.hashed_password):
         return templates.TemplateResponse(request=request, name="user_login.html", context={"error": "帳號或密碼錯誤"})
-    token = create_session(user.id)
+    token = create_session(user.id, db)
     resp = RedirectResponse(url="/dashboard", status_code=302)
     resp.set_cookie("user_token", token, httponly=True, max_age=86400)
     return resp
 
 
 @router.get("/logout")
-def logout(request: Request):
+def logout(request: Request, db: Session = Depends(get_db)):
     token = request.cookies.get("user_token")
-    destroy_session(token)
+    if token:
+        destroy_session(token, db)
     resp = RedirectResponse(url="/login", status_code=302)
     resp.delete_cookie("user_token")
     return resp

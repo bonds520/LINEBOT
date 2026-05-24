@@ -3,14 +3,23 @@ from linebot.v3.messaging import (
     ReplyMessageRequest, PushMessageRequest,
     TextMessage, ImageMessage, VideoMessage,
     FlexMessage, FlexBubble, FlexBox, FlexText, FlexButton, FlexImage,
-    URIAction,
+    URIAction, QuickReply, QuickReplyItem, MessageAction,
 )
 from sqlalchemy.orm import Session
-from app.models import LineUser, MessageLog, QAPair, PendingQuestion, MessageQuote
+from app.models import LineUser, MessageLog, QAPair, PendingQuestion, MessageQuote, OcrPendingConfirm, ArchivedDocument
 from app.matcher import find_best_match
+from app.database import SessionLocal
 import os
 import re
 import uuid
+import shutil
+import logging
+from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
+
+OCR_CONFIRM_TEXT  = "✅ 正確，請歸檔"
+OCR_REJECT_TEXT   = "❌ 辨識有誤，重新上傳"
 
 
 def get_messaging_api() -> MessagingApi:
@@ -61,6 +70,45 @@ def handle_text_message(event, db: Session):
     user_id = event.source.user_id
     text = event.message.text
     quoted_line_id = getattr(event.message, "quoted_message_id", None)
+
+    # ── OCR 確認狀態優先處理 ──────────────────────────────────────
+    if text in (OCR_CONFIRM_TEXT, OCR_REJECT_TEXT):
+        pending_ocr = db.query(OcrPendingConfirm).filter(
+            OcrPendingConfirm.line_user_id == user_id,
+            OcrPendingConfirm.status == "waiting",
+            OcrPendingConfirm.expires_at > datetime.utcnow(),
+        ).order_by(OcrPendingConfirm.created_at.desc()).first()
+
+        if pending_ocr:
+            messaging_api = get_messaging_api()
+            if text == OCR_CONFIRM_TEXT:
+                archived_path = _archive_file(pending_ocr.file_path, pending_ocr.ocr_result or "")
+                display_name, _ = fetch_profile(messaging_api, user_id)
+                db.add(ArchivedDocument(
+                    line_user_id=user_id,
+                    display_name=display_name,
+                    original_file_path=pending_ocr.file_path,
+                    archived_file_path=archived_path,
+                    ocr_result=pending_ocr.ocr_result,
+                    document_type=_doc_type_from_ocr(pending_ocr.ocr_result or ""),
+                    confirmed_at=datetime.utcnow(),
+                ))
+                pending_ocr.status = "confirmed"
+                db.commit()
+                messaging_api.push_message(PushMessageRequest(
+                    to=user_id,
+                    messages=[TextMessage(text="✅ 文件已歸檔完成，感謝您的確認！")],
+                ))
+            else:
+                pending_ocr.status = "rejected"
+                db.commit()
+                messaging_api.push_message(PushMessageRequest(
+                    to=user_id,
+                    messages=[TextMessage(text="了解，請重新上傳文件，或回覆問題由客服協助。")],
+                ))
+            log_message(db, user_id, "incoming", "text", text)
+            return
+    # ─────────────────────────────────────────────────────────────
 
     messaging_api = get_messaging_api()
     display_name, picture_url = fetch_profile(messaging_api, user_id)
@@ -162,11 +210,19 @@ def handle_image_message(event, db: Session):
         f.write(image_bytes)
 
     image_url = f"/static/images/{filename}"
+    abs_path   = os.path.abspath(save_path)
 
     messaging_api = get_messaging_api()
     display_name, picture_url = fetch_profile(messaging_api, user_id)
     upsert_user(db, user_id, display_name, picture_url)
-    log_message(db, user_id, "incoming", "image", image_url)
+    msg_log = log_message(db, user_id, "incoming", "image", image_url)
+
+    # 立即回覆「辨識中」，背景執行 OCR
+    messaging_api.reply_message(ReplyMessageRequest(
+        reply_token=event.reply_token,
+        messages=[TextMessage(text="📄 收到您的文件，正在辨識中，請稍候...")],
+    ))
+    return abs_path, user_id, msg_log.id if msg_log else None
 
 
 def handle_video_message(event, db: Session):
@@ -210,7 +266,8 @@ def handle_file_message(event, db: Session):
     dir_id = uuid.uuid4().hex
     save_dir = os.path.join(os.path.dirname(__file__), "..", "static", "files", dir_id)
     os.makedirs(save_dir, exist_ok=True)
-    with open(os.path.join(save_dir, safe_name), "wb") as f:
+    abs_path = os.path.abspath(os.path.join(save_dir, safe_name))
+    with open(abs_path, "wb") as f:
         f.write(file_bytes)
 
     file_url = f"/files/download/{dir_id}/{safe_name}"
@@ -218,7 +275,81 @@ def handle_file_message(event, db: Session):
     messaging_api = get_messaging_api()
     display_name, picture_url = fetch_profile(messaging_api, user_id)
     upsert_user(db, user_id, display_name, picture_url)
-    log_message(db, user_id, "incoming", "file", file_url)
+    msg_log = log_message(db, user_id, "incoming", "file", file_url)
+
+    # PDF 或圖片才觸發 OCR，其他檔案直接回覆
+    ext = os.path.splitext(safe_name)[1].lower()
+    if ext in (".pdf", ".jpg", ".jpeg", ".png", ".gif", ".webp"):
+        messaging_api.reply_message(ReplyMessageRequest(
+            reply_token=event.reply_token,
+            messages=[TextMessage(text="📄 收到您的文件，正在辨識中，請稍候...")],
+        ))
+        return abs_path, user_id, msg_log.id if msg_log else None
+    return None, user_id, None
+
+
+def _doc_type_from_ocr(ocr_text: str) -> str:
+    from app.ocr_client import _detect_doc_type
+    return _detect_doc_type(ocr_text)
+
+
+def _archive_file(file_path: str, ocr_text: str) -> str:
+    doc_type = _doc_type_from_ocr(ocr_text)
+    archive_base = os.getenv("ARCHIVE_PATH", os.path.join(os.path.dirname(__file__), "..", "archived"))
+    now = datetime.utcnow()
+    dest_dir = os.path.join(archive_base, doc_type, str(now.year), f"{now.month:02d}")
+    os.makedirs(dest_dir, exist_ok=True)
+    ts = now.strftime("%Y%m%d_%H%M%S")
+    basename = os.path.basename(file_path)
+    dest_path = os.path.join(dest_dir, f"{ts}_{basename}")
+    shutil.copy2(file_path, dest_path)
+    return dest_path
+
+
+def run_ocr_and_notify(user_id: str, file_path: str, message_log_id: int | None):
+    """背景任務：執行 OCR 並以 push_message 回覆用戶結果。"""
+    from app.ocr_client import extract
+    db = SessionLocal()
+    try:
+        ocr_result, doc_type = extract(file_path)
+        expires_at = datetime.utcnow() + timedelta(minutes=30)
+        ocr_record = OcrPendingConfirm(
+            line_user_id=user_id,
+            message_log_id=message_log_id,
+            file_path=file_path,
+            ocr_result=ocr_result,
+            status="waiting",
+            expires_at=expires_at,
+        )
+        db.add(ocr_record)
+        db.commit()
+
+        messaging_api = get_messaging_api()
+        result_msg = (
+            f"📋 文件辨識結果：\n\n{ocr_result}\n\n"
+            "以上是辨識結果，請確認是否正確？"
+        )
+        messaging_api.push_message(PushMessageRequest(
+            to=user_id,
+            messages=[TextMessage(
+                text=result_msg,
+                quick_reply=QuickReply(items=[
+                    QuickReplyItem(action=MessageAction(label="✅ 正確，請歸檔", text=OCR_CONFIRM_TEXT)),
+                    QuickReplyItem(action=MessageAction(label="❌ 辨識有誤", text=OCR_REJECT_TEXT)),
+                ]),
+            )],
+        ))
+    except Exception as e:
+        logger.error("OCR 背景任務失敗（user=%s）：%s", user_id, e)
+        try:
+            get_messaging_api().push_message(PushMessageRequest(
+                to=user_id,
+                messages=[TextMessage(text="⚠️ 文件辨識失敗，請重新上傳或聯繫客服。")],
+            ))
+        except Exception:
+            pass
+    finally:
+        db.close()
 
 
 def push_message(line_user_id: str, text: str, db: Session, msg_type: str = "text", log_content: str = None) -> MessageLog:

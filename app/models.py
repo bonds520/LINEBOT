@@ -120,3 +120,40 @@ class PendingQuestion(Base):
     note = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class SystemSession(Base):
+    __tablename__ = "system_sessions"
+
+    token = Column(String(64), primary_key=True)
+    user_id = Column(Integer, nullable=False)  # 0 = admin password login
+    role = Column(Enum("admin", "user"), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class OcrPendingConfirm(Base):
+    __tablename__ = "ocr_pending_confirms"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    line_user_id = Column(String(64), nullable=False, index=True)
+    message_log_id = Column(Integer, nullable=True)
+    file_path = Column(String(512), nullable=False)
+    ocr_result = Column(Text, nullable=True)
+    status = Column(Enum("waiting", "confirmed", "rejected"), default="waiting", index=True)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class ArchivedDocument(Base):
+    __tablename__ = "archived_documents"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    line_user_id = Column(String(64), nullable=False, index=True)
+    display_name = Column(String(255), nullable=True)
+    original_file_path = Column(String(512), nullable=True)
+    archived_file_path = Column(String(512), nullable=False)
+    ocr_result = Column(Text, nullable=True)
+    document_type = Column(String(64), nullable=True, default="未分類")
+    confirmed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
