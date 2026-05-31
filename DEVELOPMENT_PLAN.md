@@ -1,6 +1,7 @@
 # 開發規劃文件：OCR 歸檔工作流 + 架構升級
 
 > 建立日期：2026-05-24  
+> 最後更新：2026-05-31  
 > 分支：feature/dify-integration  
 
 ---
@@ -9,7 +10,7 @@
 
 五湖園生命智慧園區 LINE Bot 新增以下需求：
 
-1. **文件 OCR 辨識**：用戶上傳圖片或 PDF（死亡證明書、火化許可證、遷葬證明、起掘許可證、身份證明文件等），系統自動辨識文字並回覆結果
+1. **文件 OCR 辨識**：用戶上傳圖片或 PDF（死亡證明書、火化許可證、遷出證明書、起掘許可證、國民身分證等），系統自動辨識文字並回覆結果
 2. **用戶確認歸檔**：用戶確認 OCR 結果正確後，系統自動將文件歸類存入對應資料夾
 3. **資安要求**：所有文件處理必須完全在本地端執行，不得傳送至外部 API
 
@@ -24,25 +25,29 @@ LINE Platform（雲端）
 Cloudflare Tunnel
         │
         ▼
-ASUS Ascent GX10（ARM64，128GB RAM）        NAS 主機
+ASUS Ascent GX10（ARM64，128GB RAM）        NAS 主機（待掛載）
 ├── LINE Bot FastAPI                    ├── /archive/死亡證明書/{YYYY}/{MM}/
 ├── MySQL                               ├── /archive/火化許可證/{YYYY}/{MM}/
-├── Nginx + cloudflared                 ├── /archive/遷葬證明/{YYYY}/{MM}/
-├── Dify + 知識庫（知識庫 RAG）          ├── /archive/起掘許可證/{YYYY}/{MM}/
-├── Ollama + Qwen2.5VL（本地 OCR）      ├── /archive/身份證明文件/{YYYY}/{MM}/
+├── Nginx + cloudflared                 ├── /archive/遷出證明書/{YYYY}/{MM}/
+├── Dify + 知識庫（待遷移）             ├── /archive/起掘許可證/{YYYY}/{MM}/
+├── Ollama + Qwen2.5VL（待安裝）        ├── /archive/國民身分證/{YYYY}/{MM}/
 └── /opt/linebot/archived ──NFS 掛載───►└── /archive/未分類/{YYYY}/{MM}/
 
-VMware VM（192.168.31.89，遷移完成後退役）
+VMware VM（192.168.31.89）
+└── cloudflared 已停止，linebot 服務仍在（備援保留中）
 ```
 
 ### ASUS Ascent GX10 規格
 | 項目 | 規格 |
 |------|------|
+| 主機名稱 | gx10-linebot |
+| IP | 192.168.31.103 |
 | CPU | NVIDIA Grace（ARM v9.2，20 核）|
 | GPU/AI | NVIDIA Blackwell（GB10 整合，共用記憶體）|
 | RAM | 128GB LPDDR5x 統一記憶體 |
-| 儲存 | PCIe 5.0 NVMe（1-4TB）|
+| 儲存 | PCIe 5.0 NVMe（~916GB，已用 94GB）|
 | 網路 | 10GbE ConnectX-7 |
+| OS | Ubuntu 24.04.4 LTS（kernel 6.17.0-nvidia）|
 | AI 算力 | 1 petaFLOP |
 
 ---
@@ -58,24 +63,20 @@ VMware VM（192.168.31.89，遷移完成後退役）
 Webhook handler（/webhook）
         │
         ├─ 儲存檔案到本地（< 1 秒）
-        ├─ reply_message：「收到您的文件，辨識中請稍候...」  ← 立即回應，不超逾 LINE 5 秒限制
+        ├─ reply_message：「收到您的文件，辨識中請稍候...」  ← 立即回應
         ├─ BackgroundTask：run_ocr_and_notify(user_id, file_path)
         └─ return 200
 
         背景執行（與 Webhook 脫鉤）
         │
-        ├─ 圖片 → base64 編碼 → Ollama Qwen2.5VL API
-        ├─ PDF  → pymupdf 萃取內嵌文字
-        │         若無內嵌文字 → 轉圖片 → Ollama Qwen2.5VL
-        │
+        ├─ 圖片/PDF → OCR（Ollama → EasyOCR → Mock 降級鏈）
+        ├─ PDF：先檢測嵌入文字品質（短行比例 > 40% 改走圖片 OCR）
+        ├─ 語意解析：_parse_structured（Ollama 輸出）或 _extract_fields_regex（EasyOCR）
         ├─ 建立 ocr_pending_confirms 記錄（status='waiting'，30 分鐘逾時）
-        └─ push_message：OCR 辨識結果 + Quick Reply 按鈕
+        └─ push_message：「收到您提供的 XXX 的 OOO 文件」+ Quick Reply
                    [✅ 正確，請歸檔] [❌ 辨識有誤，重新上傳]
 
 用戶點「✅ 正確，請歸檔」
-        │
-        ▼
-handle_text_message（優先判斷 ocr_pending_confirms）
         │
         ├─ 移動檔案至 /archived/{document_type}/{YYYY}/{MM}/
         ├─ 寫入 archived_documents DB
@@ -87,49 +88,35 @@ handle_text_message（優先判斷 ocr_pending_confirms）
            push_message：「請重新上傳文件」
 ```
 
-### 3-2. LINE Webhook 5 秒逾時解法
+### 3-2. OCR 引擎降級鏈
 
-| 機制 | 說明 |
-|------|------|
-| `reply_message` | 使用 replyToken（30 秒有效），Webhook handler 內立即呼叫 |
-| `BackgroundTask` | FastAPI 內建，回應送出後才執行，不佔用 Webhook 時限 |
-| `push_message` | 使用 userId，背景任務完成後任意時間推播 |
+| 優先順序 | 引擎 | 狀態 | 備註 |
+|---------|------|------|------|
+| 1 | Ollama + Qwen2.5VL | ⏳ 待安裝 | GX10 GPU 加速，2-5 秒/頁，輸出結構化標籤 |
+| 2 | EasyOCR（繁體中文）| ✅ 已安裝 | 現用中繼方案，模型 295MB 已部署 |
+| 3 | Mock 測試資料 | ✅ | 引擎不可用時的最後備援 |
 
 ---
 
-## 四、OCR 引擎
+## 四、OCR 語意解析規格（5 種殯葬文件）
 
-### 選型：Ollama + Qwen2.5VL（本地視覺 LLM）
+| 文件類型 | 分類關鍵字（部分） | 擷取欄位 |
+|---------|-----------------|---------|
+| 死亡證明書 | 死亡證明書、衛生福利部、死亡原因 | 亡者姓名、身分證字號、死亡日期、出生日期、申請人 |
+| 火化許可證 | 火化許可證、殯葬管理所、准予火化 | 亡者姓名、身分證字號、死亡日期、申請人 |
+| 遷出證明書 | 遷出證明書、骨灰、骨骸、進塔證明 | 亡者姓名（過濾故/君）、申請人 |
+| 起掘許可證 | 起掘許可證、公墓、撿骨 | 亡者姓名、死亡日期（僅年份時填 YYYY-00-00）|
+| 國民身分證 | 中華民國國民身分證、統一編號、役別 | 申請人、身分證字號、出生日期、除戶備註 |
 
-| 項目 | 說明 |
-|------|------|
-| 引擎 | Ollama（ARM64 原生支援）|
-| 模型 | `qwen2.5vl:7b`（~5GB，繁中最佳）|
-| API | `POST http://localhost:11434/api/generate` |
-| 精準度 | 95%+（繁體中文官方文件）|
-| 速度 | 2-5 秒/頁（Blackwell GPU）|
-| 隱私 | 完全本地，零外部傳輸 |
-
-### 安裝（GX10 到貨後）
-
-```bash
-curl -fsSL https://ollama.com/install.sh | sh
-ollama pull qwen2.5vl:7b
-
-# 開放網路監聽（若需跨機存取）
-# /etc/systemd/system/ollama.service 加入：
-# Environment="OLLAMA_HOST=0.0.0.0:11434"
-```
-
-### Mock 模式（GX10 到貨前測試用）
-
-`OLLAMA_API_URL` 未設定或連線失敗時，`ocr_client.py` 自動回傳測試資料，讓完整流程可在現有 VM 上驗證。
+- 民國年自動換算：西元年 = 民國年 + 1911
+- Ollama 輸出帶 `【標籤】` 格式 → `_parse_structured()` 解析
+- EasyOCR 原始文字 → `_extract_fields_regex()` 正規表示式擷取
 
 ---
 
 ## 五、資料庫新增資料表
 
-### `system_sessions` — DB 化 Session（取代記憶體 dict）
+### `system_sessions` — DB 化 Session（取代記憶體 dict）✅
 
 | 欄位 | 類型 | 說明 |
 |------|------|------|
@@ -139,7 +126,7 @@ ollama pull qwen2.5vl:7b
 | expires_at | DATETIME | 逾期時間 |
 | created_at | DATETIME | 建立時間 |
 
-### `ocr_pending_confirms` — OCR 等待確認狀態
+### `ocr_pending_confirms` — OCR 等待確認狀態 ✅
 
 | 欄位 | 類型 | 說明 |
 |------|------|------|
@@ -147,12 +134,12 @@ ollama pull qwen2.5vl:7b
 | line_user_id | VARCHAR(64) | LINE 用戶 ID |
 | message_log_id | INT | 關聯 MessageLog.id |
 | file_path | VARCHAR(512) | 本地檔案路徑 |
-| ocr_result | TEXT | OCR 辨識結果 |
+| ocr_result | TEXT | OCR 辨識結果（原始文字） |
 | status | ENUM | waiting / confirmed / rejected |
 | expires_at | DATETIME | 30 分鐘逾時 |
 | created_at | DATETIME | |
 
-### `archived_documents` — 已歸檔文件記錄
+### `archived_documents` — 已歸檔文件記錄 ✅
 
 | 欄位 | 類型 | 說明 |
 |------|------|------|
@@ -162,7 +149,7 @@ ollama pull qwen2.5vl:7b
 | original_file_path | VARCHAR(512) | 原始路徑 |
 | archived_file_path | VARCHAR(512) | 歸檔後路徑（本機或 NAS）|
 | ocr_result | TEXT | OCR 完整內容 |
-| document_type | VARCHAR(64) | 文件類型（Qwen 自動辨識）|
+| document_type | VARCHAR(64) | 文件類型（自動辨識）|
 | confirmed_at | DATETIME | 用戶確認時間 |
 | created_at | DATETIME | |
 
@@ -171,109 +158,110 @@ ollama pull qwen2.5vl:7b
 ## 六、歸檔資料夾結構
 
 ```
-/opt/linebot/archived/          ← 本機測試路徑（未來掛載至 NAS）
+/opt/linebot/archived/          ← 本機路徑（NAS 就緒後改為 NFS 掛載點）
   ├── 死亡證明書/2026/05/
   ├── 火化許可證/2026/05/
-  ├── 遷葬證明/2026/05/
+  ├── 遷出證明書/2026/05/
   ├── 起掘許可證/2026/05/
-  ├── 身份證明文件/2026/05/
+  ├── 國民身分證/2026/05/
   └── 未分類/2026/05/
 ```
 
-**命名規則**：`{timestamp}_{line_user_id}_{original_filename}`  
-例：`20260524_143022_Uxxxxxxx_death_cert.pdf`
+**命名規則**：`{YYYYMMDD_HHMMSS}_{original_filename}`
 
 ---
 
-## 七、現有效能缺口修正
+## 七、現有效能缺口修正（已完成）
 
-### 7-1. Session 記憶體問題
+### 7-1. Session DB 化 ✅
+`app/auth.py` 與 `app/admin.py` 的 Session 改存 `system_sessions` 資料表，重啟服務後小編不需重新登入。
 
-**問題**：`app/auth.py` 與 `app/admin.py` 的 Session 存在 Python dict/set，重啟即失效，且無法多 Worker。  
-**解法**：Session 改存 `system_sessions` 資料表。
+### 7-2. LINE Webhook 5 秒逾時 ✅
+`BackgroundTask` + `reply_message`（即時 ACK）+ `push_message`（OCR 完成後推播）。
 
-### 7-2. 單一 Worker 限制
-
-目前啟動指令只用 1 個 Worker：
-```
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-Session DB 化後可升級為多 Worker：
-```
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
-```
+### 7-3. 非文件圖片處理 ✅
+EasyOCR 正常執行但無文字（如風景照）→ 回覆「未找到文字」，不觸發歸檔流程。
 
 ---
 
-## 八、VM → GX10 遷移計畫
+## 八、VM → GX10 遷移（已完成 2026-05-31）✅
 
-### 為什麼遷移快速（預計 30 分鐘內完成切換）
-
-| 項目 | 大小 | 方式 |
-|------|------|------|
-| 程式碼 | — | `git clone`（GitHub）|
-| MySQL 資料 | 0.16 MB | `mysqldump` 管道直傳 |
-| 靜態檔案 | 5.7 MB | `rsync` |
-| Webhook 切換 | — | `start_tunnel.sh` 自動更新 |
-
-### 遷移步驟（GX10 到貨後）
-
-```bash
-# Step 1：GX10 安裝基礎環境（VM 持續服務中）
-sudo apt install -y python3.12-venv python3-pip mysql-server nginx git
-curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.deb -o /tmp/cf.deb && sudo dpkg -i /tmp/cf.deb
-curl -fsSL https://get.docker.com | sh
-curl -fsSL https://ollama.com/install.sh | sh && ollama pull qwen2.5vl:7b
-
-# Step 2：部署程式碼
-git clone https://github.com/bonds520/LINEBOT.git /opt/linebot
-python3 -m venv /opt/linebot/venv
-/opt/linebot/venv/bin/pip install -r /opt/linebot/requirements.txt
-
-# Step 3：從 VM 複製資料
-scp superai@192.168.31.89:/opt/linebot/.env /opt/linebot/.env
-rsync -avz superai@192.168.31.89:/opt/linebot/static/ /opt/linebot/static/
-ssh superai@192.168.31.89 "mysqldump -u linebot -p'Wuhu6688!' linebot" | mysql -u linebot -p linebot
-
-# Step 4：掛載 NAS
-echo "<NAS_IP>:/volume1/archive /opt/linebot/archived nfs defaults,_netdev 0 0" | sudo tee -a /etc/fstab
-sudo mount -a
-
-# Step 5：啟動服務並切換（停機 < 10 秒）
-sudo systemctl start linebot nginx
-sudo systemctl start cloudflared   # 自動更新 LINE Webhook
-
-# Step 6：VM 停止服務
-# ssh 至 VM：sudo systemctl stop cloudflared linebot
-```
+| 項目 | 結果 |
+|------|------|
+| 程式碼 | git clone feature/dify-integration |
+| MySQL 資料 | mysqldump pipe 直傳，13 張資料表完整還原 |
+| 靜態檔案 | rsync 17MB 完成 |
+| 歸檔文件 | rsync 4.1MB 完成 |
+| EasyOCR 模型 | rsync 295MB 完成 |
+| Nginx | Port 80 → 8000 proxy 設定完成 |
+| systemd 服務 | linebot / nginx / mysql / cloudflared 全部 active |
+| Webhook 切換 | 自動更新至新 Tunnel URL，停機 < 10 秒 |
 
 ---
 
-## 九、新增環境變數
-
-```env
-# Ollama OCR（GX10 到貨後設定）
-OLLAMA_API_URL=http://localhost:11434
-OLLAMA_MODEL=qwen2.5vl:7b
-
-# 歸檔路徑（本機測試用；NAS 就緒後改為 NFS 掛載點）
-ARCHIVE_PATH=/opt/linebot/archived
-```
-
----
-
-## 十、開發時程
+## 九、開發時程
 
 | 階段 | 工作項目 | 狀態 |
 |------|---------|------|
-| **階段一（現在）** | Session DB 化 | 🔄 進行中 |
-| **階段一（現在）** | BackgroundTask OCR 架構 + Mock 模式 | 🔄 進行中 |
-| **階段一（現在）** | 確認歸檔流程（Quick Reply + 本機存檔）| 🔄 進行中 |
-| **階段二（GX10 到貨）** | 安裝 Ollama + Qwen2.5VL，替換 Mock | ⏳ 待辦 |
-| **階段二（GX10 到貨）** | LINE Bot 搬遷至 GX10 | ⏳ 待辦 |
-| **階段二（GX10 到貨）** | 掛載 NAS，更新 ARCHIVE_PATH | ⏳ 待辦 |
-| **階段三** | Dify 知識庫重建、VM 退役 | ⏳ 待辦 |
+| **已完成** | Session DB 化 | ✅ |
+| **已完成** | BackgroundTask OCR 架構 | ✅ |
+| **已完成** | EasyOCR 中繼方案（繁體中文）| ✅ |
+| **已完成** | OCR 語意解析 + 結構化欄位擷取 | ✅ |
+| **已完成** | PDF 品質檢測（改走圖片 OCR）| ✅ |
+| **已完成** | 確認歸檔流程（Quick Reply）| ✅ |
+| **已完成** | VM → GX10 遷移 | ✅ |
+| **下一步** | 安裝 Ollama + Qwen2.5VL | ⏳ 待辦 |
+| **下一步** | 掛載 NAS，更新 ARCHIVE_PATH | ⏳ 待辦 |
+| **下一步** | Dify 遷移至 GX10 | ⏳ 待辦 |
+| **下一步** | VM 退役（建議觀察 2 週後）| ⏳ 待辦 |
 
 ---
 
-*文件最後更新：2026-05-24*
+## 十、下一步詳細說明
+
+### 10-1. 安裝 Ollama + Qwen2.5VL（GX10 上）
+
+```bash
+# 在 GX10（192.168.31.103）上執行
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull qwen2.5vl:7b   # ~5GB，首次下載需時
+
+# 設定 .env
+OLLAMA_API_URL=http://localhost:11434
+OLLAMA_MODEL=qwen2.5vl:7b
+
+# 重啟服務
+sudo systemctl restart linebot
+```
+
+安裝完成後 OCR 精準度從 EasyOCR 的 ~60% 提升至 Qwen2.5VL 的 95%+。
+
+### 10-2. 掛載 NAS
+
+```bash
+# 安裝 NFS client
+sudo apt install -y nfs-common
+
+# 掛載（替換 NAS_IP）
+echo "<NAS_IP>:/volume1/archive /opt/linebot/archived nfs defaults,_netdev 0 0" \
+  | sudo tee -a /etc/fstab
+sudo mount -a
+
+# 更新 .env
+ARCHIVE_PATH=/opt/linebot/archived
+```
+
+### 10-3. Dify 遷移至 GX10
+
+需從舊 VM 匯出 Docker volumes（~366MB），在 GX10 還原後重啟 Dify：
+
+| Volume | 大小 | 說明 |
+|--------|------|------|
+| dify_dify_pg_data | 86.5MB | PostgreSQL（知識庫、App 設定）|
+| dify_dify_plugin_storage | 266MB | Plugin 二進位 |
+| dify_dify_api_storage | 12.5MB | 上傳文件 |
+| dify_dify_weaviate_data | 1.1MB | 向量資料 |
+
+---
+
+*文件最後更新：2026-05-31*

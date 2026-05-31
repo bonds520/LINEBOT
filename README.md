@@ -1,7 +1,7 @@
 # LINEBOT 系統架構文件
 
 > LINE Bot 自動回覆系統，提供 Q&A 知識庫管理、小編訓練後台與 Cloudflare Tunnel HTTPS 接入。
-> **feature/dify-integration 分支**：整合 Dify AI 平台，支援 AI 智能問答回覆（可切換）。
+> **feature/dify-integration 分支**：整合 Dify AI 平台（可切換）+ OCR 文件歸檔工作流（死亡證明書等殯葬文件自動辨識、確認、歸檔）。
 
 ---
 
@@ -16,6 +16,7 @@ Cloudflare Tunnel (cloudflared)
     │
     │  HTTP 內部轉發
     ▼
+ASUS GX10 (192.168.31.103, ARM64, 128GB)
 FastAPI + Uvicorn (0.0.0.0:8000)
     ├── /webhook                        ← LINE Webhook 端點
     ├── /admin/*                        ← 管理員後台
@@ -24,10 +25,22 @@ FastAPI + Uvicorn (0.0.0.0:8000)
     ├── /files/download/{dir_id}/{name} ← 強制下載端點（Content-Disposition: attachment）
     └── /login                          ← 使用者登入
     │
-    ├──► MySQL 8.0 (localhost:3306)          ← Q&A 知識庫 / 訊息記錄
+    ├──► MySQL 8.0 (localhost:3306)          ← Q&A 知識庫 / 訊息記錄 / Session / OCR 歸檔
     │    Database: linebot
     │
-    └──► Dify AI Platform (localhost:8080)   ← USE_DIFY=true 時啟用
+    ├──► OCR 引擎（降級鏈）
+    │    ├── Ollama + Qwen2.5VL（待安裝）← 本地視覺 LLM，95%+ 精準度
+    │    ├── EasyOCR 繁體中文（現用）    ← 中繼方案，模型已部署
+    │    └── Mock 模式                   ← 引擎不可用時備援
+    │
+    ├──► /opt/linebot/archived/          ← 歸檔文件（未來掛載 NAS）
+    │    ├── 死亡證明書/{YYYY}/{MM}/
+    │    ├── 火化許可證/{YYYY}/{MM}/
+    │    ├── 遷出證明書/{YYYY}/{MM}/
+    │    ├── 起掘許可證/{YYYY}/{MM}/
+    │    └── 國民身分證/{YYYY}/{MM}/
+    │
+    └──► Dify AI Platform (localhost:8080)   ← USE_DIFY=true 時啟用（待遷移至 GX10）
          ├── LLM：Gemini 2.5 Flash
          ├── Embedding：gemini-embedding-2-preview
          ├── 知識庫（倒排索引 FAQ）
@@ -92,13 +105,14 @@ USE_DIFY=true   →  Dify AI 回覆（知識庫 RAG + LLM 生成）
 ```
 /opt/linebot/
 ├── app/
-│   ├── main.py              # FastAPI 主程式、Webhook 端點、路由註冊
+│   ├── main.py              # FastAPI 主程式、Webhook 端點、路由註冊、BackgroundTasks
 │   ├── database.py          # SQLAlchemy 資料庫連線設定
-│   ├── models.py            # 資料庫模型定義
-│   ├── handlers.py          # LINE 事件處理（訊息、加好友、封鎖）
+│   ├── models.py            # 資料庫模型定義（含 SystemSession / OcrPendingConfirm / ArchivedDocument）
+│   ├── handlers.py          # LINE 事件處理（訊息、OCR 確認、加好友、封鎖）
+│   ├── ocr_client.py        # OCR 引擎降級鏈（Ollama → EasyOCR → Mock）+ 欄位擷取 + 確認訊息格式
 │   ├── matcher.py           # 關鍵字模糊比對邏輯
 │   ├── dify_client.py       # Dify Chat API 客戶端（USE_DIFY=true 時使用）
-│   ├── auth.py              # 使用者認證、Session 管理、密碼雜湊
+│   ├── auth.py              # 使用者認證、DB-backed Session 管理、密碼雜湊
 │   ├── admin.py             # 管理員後台路由
 │   └── user_panel.py        # 小編使用者後台路由
 ├── templates/
@@ -123,6 +137,10 @@ USE_DIFY=true   →  Dify AI 回覆（知識庫 RAG + LLM 生成）
 │   └── user_todo_create.html # 新增待辦事項
 ├── static/
 │   └── images/              # 用戶傳入的圖片/影片（LINE Content API 下載儲存）
+├── archived/                # OCR 確認後歸檔的文件（未來掛載 NAS NFS）
+│   ├── 死亡證明書/{YYYY}/{MM}/
+│   ├── 火化許可證/{YYYY}/{MM}/
+│   └── ...
 ├── dify/                    # Dify AI 平台（feature/dify-integration）
 │   ├── docker-compose.yml   # Dify 完整服務定義（8 個容器）
 │   ├── .env.example         # Dify 環境變數範本
@@ -244,6 +262,43 @@ USE_DIFY=true   →  Dify AI 回覆（知識庫 RAG + LLM 生成）
 > - `push_message()` 回傳 `MessageLog` 物件，支援 `log_content` 參數（傳送給 LINE 的文字與儲存至 DB 的文字可分離）。  
 > - 小編回覆時（outgoing）與 LINE 用戶引用回覆時（incoming）均會建立 `MessageQuote` 記錄。
 
+### `system_sessions` — DB 化 Session（取代記憶體 dict）
+
+| 欄位 | 類型 | 說明 |
+|------|------|------|
+| token | VARCHAR(64) | Session Token（主鍵）|
+| user_id | INT | 關聯 system_users.id（0 = admin）|
+| role | ENUM | admin / user |
+| expires_at | DATETIME | 逾期時間（24 小時）|
+| created_at | DATETIME | 建立時間 |
+
+### `ocr_pending_confirms` — OCR 待確認記錄
+
+| 欄位 | 類型 | 說明 |
+|------|------|------|
+| id | INT | 主鍵 |
+| line_user_id | VARCHAR(64) | LINE 用戶 ID |
+| message_log_id | INT | 關聯 MessageLog.id |
+| file_path | VARCHAR(512) | 本地檔案路徑 |
+| ocr_result | TEXT | OCR 辨識結果（原始文字）|
+| status | ENUM | waiting / confirmed / rejected |
+| expires_at | DATETIME | 30 分鐘逾時 |
+| created_at | DATETIME | 建立時間 |
+
+### `archived_documents` — 已歸檔文件
+
+| 欄位 | 類型 | 說明 |
+|------|------|------|
+| id | INT | 主鍵 |
+| line_user_id | VARCHAR(64) | 上傳者 LINE 用戶 ID |
+| display_name | VARCHAR(255) | 上傳者顯示名稱 |
+| original_file_path | VARCHAR(512) | 原始儲存路徑 |
+| archived_file_path | VARCHAR(512) | 歸檔後路徑（本機或 NAS）|
+| ocr_result | TEXT | OCR 完整辨識內容 |
+| document_type | VARCHAR(64) | 文件類型（自動辨識）|
+| confirmed_at | DATETIME | 用戶確認時間 |
+| created_at | DATETIME | 建立時間 |
+
 ### `system_users` — 系統使用者
 
 | 欄位 | 類型 | 說明 |
@@ -285,9 +340,20 @@ USE_DIFY=true   →  Dify AI 回覆（知識庫 RAG + LLM 生成）
     │                                                              │
     ├── 影片訊息 ──► 同上流程，儲存為 .mp4（type=video）            ◄┘
     │
-    └── 檔案訊息 ──► 呼叫 LINE Content API 下載原始檔案
-                    儲存至 /static/files/<dir_id>/<safe_name>
-                    記錄 MessageLog（type=file, content=/files/download/...）
+    ├── 檔案訊息 ──► 呼叫 LINE Content API 下載原始檔案
+    │               儲存至 /static/files/<dir_id>/<safe_name>
+    │               記錄 MessageLog（type=file, content=/files/download/...）
+    │               PDF / 圖片檔 → 同圖片訊息，觸發 OCR 背景任務
+    │
+    └── 圖片/PDF OCR 背景任務
+            ├─ reply_message：「收到您的文件，辨識中請稍候...」（立即）
+            ├─ BackgroundTask → run_ocr_and_notify()
+            │   ├─ OCR 降級鏈：Ollama → EasyOCR → Mock
+            │   ├─ 語意解析：擷取亡者姓名、身分證字號、死亡日期、申請人
+            │   └─ push_message：「收到您提供的 XXX 的 OOO 文件，以上資訊是否正確？」
+            │                     + Quick Reply [✅ 正確，請歸檔] [❌ 辨識有誤]
+            └─ 用戶確認後 → 歸檔至 /archived/{文件類型}/{YYYY}/{MM}/
+                           → 寫入 archived_documents DB
 ```
 
 ### 人工回覆流程
@@ -426,15 +492,15 @@ USE_DIFY=true   →  Dify AI 回覆（知識庫 RAG + LLM 生成）
 
 ## 系統服務
 
-五個服務均設定為**開機自動啟動**：
+五個服務均設定為**開機自動啟動**（GX10，192.168.31.103）：
 
-| 服務 | 說明 |
-|------|------|
-| `linebot` | FastAPI LINE Bot 主程式 |
-| `nginx` | 反向代理（Port 80 → 8000） |
-| `mysql` | 資料庫 |
-| `cloudflared` | Cloudflare Tunnel + 自動更新 Webhook |
-| `dify` | Dify AI 平台（Docker Compose，Port 8080） |
+| 服務 | 說明 | 狀態 |
+|------|------|------|
+| `linebot` | FastAPI LINE Bot 主程式 | ✅ |
+| `nginx` | 反向代理（Port 80 → 8000） | ✅ |
+| `mysql` | 資料庫 | ✅ |
+| `cloudflared` | Cloudflare Tunnel + 自動更新 Webhook | ✅ |
+| `dify` | Dify AI 平台（Docker Compose，Port 8080）| ⏳ 待遷移 |
 
 ```bash
 # 查看所有服務狀態
@@ -730,23 +796,39 @@ DIFY_API_KEY=your-dify-app-api-key
 
 ## 主機資訊
 
+### 正式主機（GX10）
+
 | 項目 | 值 |
 |------|-----|
-| 主機名稱 | LINEBOT |
+| 主機名稱 | gx10-linebot |
+| IP 位址 | 192.168.31.103 |
+| 作業系統 | Ubuntu 24.04.4 LTS（kernel 6.17.0-nvidia）|
+| 硬體 | ASUS Ascent GX10（ARM64，NVIDIA Grace + Blackwell）|
+| RAM | 128GB |
+| Python 版本 | 3.12.3 |
+| 遷移完成 | 2026-05-31 |
+
+### 舊 VM（備援保留）
+
+| 項目 | 值 |
+|------|-----|
 | IP 位址 | 192.168.31.89 |
 | 作業系統 | Ubuntu 24.04.4 LTS |
 | 虛擬化平台 | VMware |
-| Python 版本 | 3.12.3 |
+| 狀態 | cloudflared 已停止，建議觀察 2 週後退役 |
 
 ---
 
-*文件最後更新：2026-05-18*
+*文件最後更新：2026-05-31*
 
 ### 主要功能更新記錄
 
 | 版本/日期 | 更新內容 |
 |-----------|---------|
-| 2026-05-18（最新） | **feature/dify-integration**：整合 Dify AI 平台（Docker Compose 8 容器）；新增 `app/dify_client.py` Dify Chat API 客戶端；`USE_DIFY` 環境變數切換 AI/Q&A 回覆模式；新增 `dify/` 目錄（docker-compose.yml、setup.sh、nginx 設定）；Celery Broker 明確指定 Redis；Weaviate 升級至 1.27.0；新增 `dify` systemd 服務開機自啟 |
+| 2026-05-31（最新） | **VM → GX10 遷移完成**：LINE Bot 正式運行於 192.168.31.103（ARM64），MySQL/Nginx/cloudflared 全部就緒，Webhook 自動切換，舊 VM 備援保留 |
+| 2026-05-31 | **OCR 語意解析升級**：結構化欄位擷取（5 種殯葬文件）、Ollama 結構化提示詞、民國年自動換算、PDF 品質檢測、確認訊息格式「收到您提供的 XXX 的 OOO 文件」 |
+| 2026-05-24 | **OCR 歸檔工作流**：BackgroundTask 架構解決 LINE 5 秒逾時、EasyOCR 繁體中文中繼方案、Session DB 化（system_sessions）、新增 ocr_pending_confirms / archived_documents 資料表 |
+| 2026-05-18 | **feature/dify-integration**：整合 Dify AI 平台（Docker Compose 8 容器）；新增 `app/dify_client.py` Dify Chat API 客戶端；`USE_DIFY` 環境變數切換 AI/Q&A 回覆模式；新增 `dify/` 目錄（docker-compose.yml、setup.sh、nginx 設定）；Weaviate 升級至 1.27.0 |
 | 2026-05-13 | 新增 LINE 用戶引用回覆追蹤（`line_message_id` + `MessageQuote` for incoming）；聊天記錄顯示用戶引用的被引用內容（含圖片縮圖）；引用圖片回覆改以 FlexMessage 傳送（含縮圖） |
 | 2026-05-13 | 新增文件接收支援（DOC/XLS/PDF/ZIP 等）；小編可傳送圖片/影片/文件；文件以 FlexMessage 卡片顯示；新增強制下載端點 `/files/download/` |
 | 2026-05-13 | 新增聊天記錄引用回覆功能（`MessageQuote` 資料表）；圖片引用於輸入列顯示縮圖預覽；聊天記錄氣泡顯示引用區塊 |
