@@ -82,15 +82,20 @@ def handle_text_message(event, db: Session):
         if pending_ocr:
             messaging_api = get_messaging_api()
             if text == OCR_CONFIRM_TEXT:
-                archived_path = _archive_file(pending_ocr.file_path, pending_ocr.ocr_result or "")
+                ocr_text = pending_ocr.ocr_result or ""
+                archived_path = _archive_file(pending_ocr.file_path, ocr_text)
+                from app.ocr_client import _parse_structured, _detect_doc_type
+                doc_type, _ = _parse_structured(ocr_text)
+                if not doc_type:
+                    doc_type = _detect_doc_type(ocr_text)
                 display_name, _ = fetch_profile(messaging_api, user_id)
                 db.add(ArchivedDocument(
                     line_user_id=user_id,
                     display_name=display_name,
                     original_file_path=pending_ocr.file_path,
                     archived_file_path=archived_path,
-                    ocr_result=pending_ocr.ocr_result,
-                    document_type=_doc_type_from_ocr(pending_ocr.ocr_result or ""),
+                    ocr_result=ocr_text,
+                    document_type=doc_type,
                     confirmed_at=datetime.utcnow(),
                 ))
                 pending_ocr.status = "confirmed"
@@ -308,10 +313,20 @@ def _archive_file(file_path: str, ocr_text: str) -> str:
 
 def run_ocr_and_notify(user_id: str, file_path: str, message_log_id: int | None):
     """背景任務：執行 OCR 並以 push_message 回覆用戶結果。"""
-    from app.ocr_client import extract
+    from app.ocr_client import extract, format_confirm_message
     db = SessionLocal()
     try:
-        ocr_result, doc_type = extract(file_path)
+        ocr_result, doc_type, fields = extract(file_path)
+        messaging_api = get_messaging_api()
+
+        # 圖片中無文字（例如風景照）→ 直接告知，不建立歸檔流程
+        if ocr_result.startswith("【未找到文字】"):
+            messaging_api.push_message(PushMessageRequest(
+                to=user_id,
+                messages=[TextMessage(text=ocr_result)],
+            ))
+            return
+
         expires_at = datetime.utcnow() + timedelta(minutes=30)
         ocr_record = OcrPendingConfirm(
             line_user_id=user_id,
@@ -324,11 +339,7 @@ def run_ocr_and_notify(user_id: str, file_path: str, message_log_id: int | None)
         db.add(ocr_record)
         db.commit()
 
-        messaging_api = get_messaging_api()
-        result_msg = (
-            f"📋 文件辨識結果：\n\n{ocr_result}\n\n"
-            "以上是辨識結果，請確認是否正確？"
-        )
+        result_msg = format_confirm_message(doc_type, fields, ocr_result)
         messaging_api.push_message(PushMessageRequest(
             to=user_id,
             messages=[TextMessage(
