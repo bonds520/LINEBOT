@@ -29,7 +29,7 @@ ASUS Ascent GX10（ARM64，128GB RAM）        NAS 主機（待掛載）
 ├── LINE Bot FastAPI                    ├── /archive/死亡證明書/{YYYY}/{MM}/
 ├── MySQL                               ├── /archive/火化許可證/{YYYY}/{MM}/
 ├── Nginx + cloudflared                 ├── /archive/遷出證明書/{YYYY}/{MM}/
-├── Dify + 知識庫（待遷移）             ├── /archive/起掘許可證/{YYYY}/{MM}/
+├── Dify + 知識庫（已遷移 ✅）             ├── /archive/起掘許可證/{YYYY}/{MM}/
 ├── Ollama + Qwen2.5VL（待安裝）        ├── /archive/國民身分證/{YYYY}/{MM}/
 └── /opt/linebot/archived ──NFS 掛載───►└── /archive/未分類/{YYYY}/{MM}/
 
@@ -212,7 +212,7 @@ EasyOCR 正常執行但無文字（如風景照）→ 回覆「未找到文字�
 | **已完成** | VM → GX10 遷移 | ✅ |
 | **已完成** | 安裝 Ollama + Qwen2.5VL | ✅ |
 | **下一步** | 掛載 NAS，更新 ARCHIVE_PATH | ⏳ 待辦 |
-| **下一步** | Dify 遷移至 GX10 | ⏳ 待辦 |
+| **已完成** | Dify 遷移至 GX10 | ✅ |
 | **下一步** | VM 退役（建議觀察 2 週後）| ⏳ 待辦 |
 
 ---
