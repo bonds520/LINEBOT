@@ -7,8 +7,11 @@
     <button class="btn btn-sm me-2" style="background:#06C755;color:#fff" data-bs-toggle="modal" data-bs-target="#addModal">
       <i class="bi bi-plus-lg"></i> 新增 Q&A
     </button>
-    <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#importModal">
+    <button class="btn btn-sm btn-outline-secondary me-2" data-bs-toggle="modal" data-bs-target="#importModal">
       <i class="bi bi-upload"></i> 批次匯入 CSV
+    </button>
+    <button class="btn btn-sm btn-outline-primary" id="syncDifyBtn" onclick="syncDify('/admin/qa/sync-dify')">
+      <i class="bi bi-arrow-repeat"></i> 同步至 AI 知識庫
     </button>
   </div>
 </div>

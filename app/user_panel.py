@@ -134,6 +134,27 @@ def qa_delete(qa_id: int, from_page: str = "qa", db: Session = Depends(get_db), 
     return RedirectResponse(url=redirect, status_code=302)
 
 
+@router.post("/dashboard/qa/sync-dify")
+def qa_sync_dify(user: SystemUser = Depends(current_user_dep)):
+    import os, subprocess
+    from fastapi.responses import JSONResponse
+    try:
+        sync_script = os.path.join(os.path.dirname(__file__), "..", "sync_qa_to_dify.py")
+        venv_python = os.path.join(os.path.dirname(__file__), "..", "venv", "bin", "python3")
+        result = subprocess.run(
+            [venv_python, sync_script],
+            capture_output=True, text=True, timeout=120
+        )
+        if result.returncode == 0:
+            lines = [l for l in result.stderr.splitlines() if "成功" in l or "完成" in l]
+            msg = lines[-1] if lines else "同步完成"
+            return JSONResponse({"status": "ok", "message": msg})
+        else:
+            return JSONResponse({"status": "error", "message": result.stderr[-300:]}, status_code=500)
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+
 # ── 建立 Q&A（手動新增訓練資料）────────────────────────────────
 @router.get("/dashboard/create-qa", response_class=HTMLResponse)
 def create_qa_page(request: Request, db: Session = Depends(get_db), user: SystemUser = Depends(current_user_dep)):

@@ -28,10 +28,15 @@ FastAPI + Uvicorn (0.0.0.0:8000)
     ├──► MySQL 8.0 (localhost:3306)          ← Q&A 知識庫 / 訊息記錄 / Session / OCR 歸檔
     │    Database: linebot
     │
+    ├──► 自建語意搜尋（直接管理 Weaviate，繞開 Dify worker）
+    │    ├── bge-m3（Ollama）            ← 查詢向量化 + 知識庫索引
+    │    ├── Weaviate 向量搜尋           ← named vector 語意比對
+    │    └── qwen2.5vl:7b（Ollama）     ← 根據知識庫生成回覆
+    │
     ├──► OCR 引擎（降級鏈）
-    │    ├── Ollama + Qwen2.5VL（待安裝）← 本地視覺 LLM，95%+ 精準度
-    │    ├── EasyOCR 繁體中文（現用）    ← 中繼方案，模型已部署
-    │    └── Mock 模式                   ← 引擎不可用時備援
+    │    ├── Ollama + Qwen2.5VL（✅ 已安裝）← 本地視覺 LLM，95%+ 精準度
+    │    ├── EasyOCR 繁體中文（備援）    ← Ollama 不可用時中繼，模型已部署
+    │    └── Mock 模式                   ← 引擎不可用時最後備援
     │
     ├──► /opt/linebot/archived/          ← 歸檔文件（未來掛載 NAS）
     │    ├── 死亡證明書/{YYYY}/{MM}/
@@ -40,17 +45,17 @@ FastAPI + Uvicorn (0.0.0.0:8000)
     │    ├── 起掘許可證/{YYYY}/{MM}/
     │    └── 國民身分證/{YYYY}/{MM}/
     │
-    └──► Dify AI Platform (localhost:8080)   ← USE_DIFY=true 時啟用（待遷移至 GX10）
-         ├── LLM：Gemini 2.5 Flash
-         ├── Embedding：gemini-embedding-2-preview
-         ├── 知識庫（倒排索引 FAQ）
+    └──► Dify AI Platform (localhost:8080)   ← ✅ 已遷移至 GX10（Weaviate 知識庫）
+         ├── LLM：qwen2.5vl:7b（本地 Ollama）
+         ├── Embedding：bge-m3（本地 Ollama，named vector）
+         ├── 知識庫（向量語意搜尋，自管 Weaviate）
          └── Docker Compose 服務群（Port 8080）
               ├── api / worker（langgenius/dify-api:latest）
               ├── plugin_daemon（dify-plugin-daemon:0.6.0-local）
               ├── web / nginx
               ├── PostgreSQL 15（dify + dify_plugin 資料庫）
               ├── Redis 7
-              └── Weaviate 1.27.0（向量資料庫）
+              └── Weaviate 1.27.0（向量資料庫，named vector 格式）
 ```
 
 ### 回覆模式切換
@@ -59,8 +64,13 @@ FastAPI + Uvicorn (0.0.0.0:8000)
 
 ```
 USE_DIFY=false  →  模糊比對 Q&A（rapidfuzz，相似度 ≥ 60%）
-USE_DIFY=true   →  Dify AI 回覆（知識庫 RAG + LLM 生成）
+USE_DIFY=true   →  自建語意搜尋（bge-m3 → Weaviate → qwen2.5vl:7b 生成回覆）
 ```
+
+> **知識庫同步**：後台修改 Q&A 後，點「同步至 AI 知識庫」按鈕，或執行：
+> ```bash
+> /opt/linebot/venv/bin/python sync_qa_to_dify.py
+> ```
 
 ---
 
@@ -500,7 +510,7 @@ USE_DIFY=true   →  Dify AI 回覆（知識庫 RAG + LLM 生成）
 | `nginx` | 反向代理（Port 80 → 8000） | ✅ |
 | `mysql` | 資料庫 | ✅ |
 | `cloudflared` | Cloudflare Tunnel + 自動更新 Webhook | ✅ |
-| `dify` | Dify AI 平台（Docker Compose，Port 8080）| ⏳ 待遷移 |
+| `dify` | Dify AI 平台（Docker Compose，Port 8080）| ✅ |
 
 ```bash
 # 查看所有服務狀態
@@ -819,12 +829,14 @@ DIFY_API_KEY=your-dify-app-api-key
 
 ---
 
-*文件最後更新：2026-05-31*
+*文件最後更新：2026-06-02（自建語意搜尋架構）*
 
 ### 主要功能更新記錄
 
 | 版本/日期 | 更新內容 |
 |-----------|---------|
+| 2026-06-02（最新） | **自建語意搜尋架構**：以 bge-m3（Ollama）+ Weaviate（named vector）+ qwen2.5vl:7b 取代 Dify RAG pipeline，完全繞開 Dify worker 向量覆蓋問題；新增後台「同步至 AI 知識庫」按鈕；sync_qa_to_dify.py 腳本直接管理 Weaviate |
+| 2026-06-02 | **Dify 本地化**：整合 Ollama bge-m3 embedding、qwen2.5:32b LLM（純文字），知識庫改為向量語意搜尋（high_quality），解決倒排索引命中率低問題 |
 | 2026-05-31（最新） | **VM → GX10 遷移完成**：LINE Bot 正式運行於 192.168.31.103（ARM64），MySQL/Nginx/cloudflared 全部就緒，Webhook 自動切換，舊 VM 備援保留 |
 | 2026-05-31 | **OCR 語意解析升級**：結構化欄位擷取（5 種殯葬文件）、Ollama 結構化提示詞、民國年自動換算、PDF 品質檢測、確認訊息格式「收到您提供的 XXX 的 OOO 文件」 |
 | 2026-05-24 | **OCR 歸檔工作流**：BackgroundTask 架構解決 LINE 5 秒逾時、EasyOCR 繁體中文中繼方案、Session DB 化（system_sessions）、新增 ocr_pending_confirms / archived_documents 資料表 |

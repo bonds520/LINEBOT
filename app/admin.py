@@ -148,6 +148,26 @@ def qa_delete(qa_id: int, db: Session = Depends(get_db), _=Depends(check_auth)):
     return RedirectResponse(url="/admin/qa", status_code=302)
 
 
+@router.post("/qa/sync-dify")
+def qa_sync_dify(_=Depends(check_auth)):
+    try:
+        import sys
+        sync_script = os.path.join(os.path.dirname(__file__), "..", "sync_qa_to_dify.py")
+        venv_python = os.path.join(os.path.dirname(__file__), "..", "venv", "bin", "python3")
+        result = subprocess.run(
+            [venv_python, sync_script],
+            capture_output=True, text=True, timeout=120
+        )
+        if result.returncode == 0:
+            lines = [l for l in result.stderr.splitlines() if "成功" in l or "完成" in l]
+            msg = lines[-1] if lines else "同步完成"
+            return JSONResponse({"status": "ok", "message": msg})
+        else:
+            return JSONResponse({"status": "error", "message": result.stderr[-300:]}, status_code=500)
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+
 @router.post("/qa/import")
 async def qa_import(file: UploadFile = File(...), db: Session = Depends(get_db), _=Depends(check_auth)):
     content = await file.read()
