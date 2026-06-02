@@ -2,6 +2,8 @@ import csv
 import io
 import os
 import re
+import subprocess
+import threading
 import uuid
 from datetime import datetime
 from fastapi import APIRouter, Depends, Request, Form, UploadFile, File
@@ -13,6 +15,17 @@ from app.models import SystemUser, QAPair, PendingQuestion, MessageLog, LineUser
 from app.auth import verify_password, create_session, destroy_session, get_current_user
 
 router = APIRouter()
+
+_SYNC_SCRIPT = os.path.join(os.path.dirname(__file__), "..", "sync_qa_to_dify.py")
+_VENV_PYTHON = os.path.join(os.path.dirname(__file__), "..", "venv", "bin", "python3")
+
+def _trigger_sync():
+    def _run():
+        try:
+            subprocess.run([_VENV_PYTHON, _SYNC_SCRIPT], capture_output=True, timeout=120)
+        except Exception:
+            pass
+    threading.Thread(target=_run, daemon=True).start()
 templates = Jinja2Templates(directory="templates")
 
 
@@ -111,6 +124,7 @@ def qa_update(
         qa.is_trained = False
         qa.trained_at = None
         db.commit()
+        _trigger_sync()
     return RedirectResponse(url="/dashboard/qa", status_code=302)
 
 
@@ -121,6 +135,7 @@ def qa_train(qa_id: int, db: Session = Depends(get_db), user: SystemUser = Depen
         qa.is_trained = True
         qa.trained_at = datetime.now()
         db.commit()
+        _trigger_sync()
     return RedirectResponse(url="/dashboard/qa", status_code=302)
 
 
@@ -130,6 +145,7 @@ def qa_delete(qa_id: int, from_page: str = "qa", db: Session = Depends(get_db), 
     if qa:
         db.delete(qa)
         db.commit()
+        _trigger_sync()
     redirect = "/dashboard/trained?deleted=1" if from_page == "trained" else "/dashboard/qa?deleted=1"
     return RedirectResponse(url=redirect, status_code=302)
 
@@ -179,6 +195,7 @@ def create_qa(
     qa = QAPair(question=question, answer=answer, keywords=keywords, category=category)
     db.add(qa)
     db.commit()
+    _trigger_sync()
     return RedirectResponse(url="/dashboard/create-qa?success=1", status_code=302)
 
 
@@ -202,6 +219,8 @@ async def create_qa_import(file: UploadFile = File(...), db: Session = Depends(g
             db.add(qa)
             count += 1
     db.commit()
+    if count > 0:
+        _trigger_sync()
     return RedirectResponse(url=f"/dashboard/create-qa?imported={count}", status_code=302)
 
 

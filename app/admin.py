@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 import subprocess
+import threading
 import time
 import httpx
 from datetime import datetime, timedelta
@@ -20,6 +21,18 @@ from app.models import QAPair, PendingQuestion, MessageLog, LineUser, SystemUser
 from app.auth import hash_password
 
 router = APIRouter(prefix="/admin")
+
+_SYNC_SCRIPT = os.path.join(os.path.dirname(__file__), "..", "sync_qa_to_dify.py")
+_VENV_PYTHON = os.path.join(os.path.dirname(__file__), "..", "venv", "bin", "python3")
+
+def _trigger_sync():
+    """背景執行 Weaviate 同步，不阻塞 HTTP 回應"""
+    def _run():
+        try:
+            subprocess.run([_VENV_PYTHON, _SYNC_SCRIPT], capture_output=True, timeout=120)
+        except Exception:
+            pass
+    threading.Thread(target=_run, daemon=True).start()
 templates = Jinja2Templates(directory="templates")
 
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin1234")
@@ -114,6 +127,7 @@ def qa_create(
     qa = QAPair(question=question, answer=answer, keywords=keywords, category=category)
     db.add(qa)
     db.commit()
+    _trigger_sync()
     return RedirectResponse(url="/admin/qa", status_code=302)
 
 
@@ -136,6 +150,7 @@ def qa_update(
         qa.category = category
         qa.is_active = is_active
         db.commit()
+        _trigger_sync()
     return RedirectResponse(url="/admin/qa", status_code=302)
 
 
@@ -145,6 +160,7 @@ def qa_delete(qa_id: int, db: Session = Depends(get_db), _=Depends(check_auth)):
     if qa:
         db.delete(qa)
         db.commit()
+        _trigger_sync()
     return RedirectResponse(url="/admin/qa", status_code=302)
 
 
@@ -184,6 +200,8 @@ async def qa_import(file: UploadFile = File(...), db: Session = Depends(get_db),
             db.add(qa)
             count += 1
     db.commit()
+    if count > 0:
+        _trigger_sync()
     return RedirectResponse(url=f"/admin/qa?imported={count}", status_code=302)
 
 
