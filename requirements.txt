@@ -8,3 +8,4 @@ cryptography==48.0.0
 httpx==0.28.1
 pymupdf
 easyocr
+faster-whisper

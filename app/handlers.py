@@ -238,6 +238,105 @@ def handle_image_message(event, db: Session):
     return abs_path, user_id, msg_log.id if msg_log else None
 
 
+def handle_audio_message(event, db: Session):
+    """語音訊息：下載 M4A → Whisper STT → 走文字回覆流程"""
+    user_id = event.source.user_id
+    message_id = event.message.id
+
+    configuration = Configuration(access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
+    with ApiClient(configuration) as api_client:
+        blob_api = MessagingApiBlob(api_client)
+        audio_bytes = blob_api.get_message_content(message_id)
+
+    messaging_api = get_messaging_api()
+    display_name, picture_url = fetch_profile(messaging_api, user_id)
+    upsert_user(db, user_id, display_name, picture_url)
+
+    # 立即回覆「語音辨識中」
+    messaging_api.reply_message(ReplyMessageRequest(
+        reply_token=event.reply_token,
+        messages=[TextMessage(text="🎙️ 收到您的語音，辨識中請稍候...")],
+    ))
+
+    return audio_bytes, user_id
+
+
+def run_stt_and_reply(audio_bytes: bytes, user_id: str, db_factory):
+    """背景任務：STT 辨識 → 走文字回覆流程"""
+    from app.stt_client import transcribe
+    db = db_factory()
+    try:
+        text = transcribe(audio_bytes)
+        messaging_api = get_messaging_api()
+
+        if not text:
+            messaging_api.push_message(PushMessageRequest(
+                to=user_id,
+                messages=[TextMessage(text="⚠️ 語音辨識失敗，請重新說話或改用文字輸入。")],
+            ))
+            return
+
+        logger.info("STT 結果：%s", text[:60])
+
+        # 記錄語音原文
+        log_message(db, user_id, "incoming", "audio", f"[語音] {text}")
+
+        # 走和文字訊息相同的回覆邏輯
+        use_dify = os.getenv("USE_DIFY", "false").lower() == "true"
+        reply_text = None
+
+        if use_dify:
+            from app.dify_client import chat as dify_chat
+            reply_text = dify_chat(user_id, text)
+            if not reply_text or "【轉人工客服】" in reply_text:
+                from app.matcher import find_best_match
+                result = find_best_match(text, db)
+                if result:
+                    qa, score = result
+                    reply_text = qa.answer
+                    qa.hit_count += 1
+                    db.commit()
+                else:
+                    reply_text = None
+        else:
+            from app.matcher import find_best_match
+            result = find_best_match(text, db)
+            if result:
+                qa, score = result
+                reply_text = qa.answer
+                qa.hit_count += 1
+                db.commit()
+
+        if not reply_text:
+            reply_text = "您的問題已收到，將由客服人員儘快為您回覆，感謝您的耐心等候！"
+            from app.models import PendingQuestion
+            user = db.query(__import__('app.models', fromlist=['LineUser']).LineUser).filter_by(line_user_id=user_id).first()
+            db.add(PendingQuestion(
+                line_user_id=user_id,
+                display_name=user.display_name if user else None,
+                question=f"[語音] {text}",
+            ))
+            db.commit()
+
+        messaging_api.push_message(PushMessageRequest(
+            to=user_id,
+            messages=[TextMessage(text=reply_text)],
+        ))
+        log_message(db, user_id, "outgoing", "text", reply_text)
+
+    except Exception as e:
+        logger.error("STT 背景任務失敗（user=%s）：%s", user_id, e)
+        try:
+            get_messaging_api().push_message(PushMessageRequest(
+                to=user_id,
+                messages=[TextMessage(text="⚠️ 語音處理失敗，請改用文字輸入。")],
+            ))
+        except Exception:
+            pass
+    finally:
+        db.close()
+
+
 def handle_video_message(event, db: Session):
     user_id = event.source.user_id
     message_id = event.message.id

@@ -207,7 +207,10 @@ def _get_easyocr_reader():
         try:
             import easyocr
             logger.info("初始化 EasyOCR（繁體中文 + 英文），首次載入需要約 30 秒...")
-            _easyocr_reader = easyocr.Reader(["ch_tra", "en"], gpu=False, verbose=False)
+            _easyocr_reader = easyocr.Reader(
+                ["ch_tra", "en"], gpu=False, verbose=False,
+                model_storage_directory="/opt/models/easyocr",
+            )
             logger.info("EasyOCR 初始化完成")
         except ImportError:
             logger.warning("easyocr 未安裝")

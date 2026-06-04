@@ -6,7 +6,7 @@ from linebot.v3 import WebhookParser
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.webhooks import (
     MessageEvent, TextMessageContent, ImageMessageContent,
-    VideoMessageContent, FileMessageContent,
+    AudioMessageContent, VideoMessageContent, FileMessageContent,
     FollowEvent, UnfollowEvent
 )
 from app.database import get_db, engine
@@ -86,6 +86,14 @@ async def webhook(request: Request, background_tasks: BackgroundTasks, db: Sessi
                 if result and result[0]:
                     file_path, user_id, log_id = result
                     background_tasks.add_task(handlers.run_ocr_and_notify, user_id, file_path, log_id)
+            elif isinstance(event, MessageEvent) and isinstance(event.message, AudioMessageContent):
+                result = handlers.handle_audio_message(event, db)
+                if result:
+                    audio_bytes, user_id = result
+                    from app.database import SessionLocal
+                    background_tasks.add_task(
+                        handlers.run_stt_and_reply, audio_bytes, user_id, SessionLocal
+                    )
             elif isinstance(event, MessageEvent) and isinstance(event.message, VideoMessageContent):
                 handlers.handle_video_message(event, db)
             elif isinstance(event, MessageEvent) and isinstance(event.message, FileMessageContent):

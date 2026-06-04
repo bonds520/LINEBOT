@@ -28,10 +28,15 @@ FastAPI + Uvicorn (0.0.0.0:8000)
     ├──► MySQL 8.0 (localhost:3306)          ← Q&A 知識庫 / 訊息記錄 / Session / OCR 歸檔
     │    Database: linebot
     │
-    ├──► 自建語意搜尋（直接管理 Weaviate，繞開 Dify worker）
-    │    ├── bge-m3（Ollama）            ← 查詢向量化 + 知識庫索引
-    │    ├── Weaviate 向量搜尋           ← named vector 語意比對
-    │    └── qwen2.5vl:7b（Ollama）     ← 根據知識庫生成回覆
+    ├──► 三層式 RAG 語意搜尋（自管 Weaviate，繞開 Dify worker）
+    │    ├── Layer 1 MySQL              ← 原文唯一來源（Q&A question/answer）
+    │    ├── Layer 2 Weaviate           ← 向量索引（僅存 qa_id，不存原文）
+    │    │    └── bge-m3（Ollama）      ← named vector embedding
+    │    └── Layer 3 Ollama             ← qwen2.5vl:7b 生成回覆
+    │
+    ├──► STT 語音輸入（新增）
+    │    ├── Whisper medium（faster-whisper）← 本地 STT，繁體中文
+    │    └── ffmpeg                     ← M4A → WAV 格式轉換
     │
     ├──► OCR 引擎（降級鏈）
     │    ├── Ollama + Qwen2.5VL（✅ 已安裝）← 本地視覺 LLM，95%+ 精準度
@@ -96,18 +101,34 @@ USE_DIFY=true   →  自建語意搜尋（bge-m3 → Weaviate → qwen2.5vl:7b �
 | 作業系統 | Ubuntu 24.04.4 LTS | — |
 | 虛擬化 | VMware | — |
 
-### Dify AI 平台（feature/dify-integration）
+### AI / LLM 元件
+
+| 元件 | 技術 | 儲存路徑 | 說明 |
+|------|------|---------|------|
+| 對話 + OCR | qwen2.5vl:7b | Ollama 管理 | 視覺語言模型，繁中支援 |
+| Embedding | bge-m3 | Ollama 管理 | 多語意向量，1024 維 |
+| STT 語音辨識 | Whisper medium | `/opt/models/whisper/` | 繁體中文 STT |
+| OCR 備援 | EasyOCR | `/opt/models/easyocr/` | 繁體中文 + 英文 |
+
+### 三層式 RAG 架構
+
+| 層 | 元件 | 說明 |
+|----|------|------|
+| Layer 1 | MySQL `qa_pairs` | 原文唯一來源（不重複儲存）|
+| Layer 2 | Weaviate（named vector）| 只存 `qa_id` + 向量，查詢後回查 MySQL |
+| Layer 3 | Ollama qwen2.5vl:7b | 根據回查原文生成自然語言回覆 |
+
+### Dify AI 平台（Docker Compose，Port 8080）
 
 | 元件 | 技術 | 說明 |
 |------|------|------|
-| AI 平台 | Dify | 1.14.x（Docker Compose） |
-| LLM | Google Gemini 2.5 Flash | 對話生成 |
-| Embedding | gemini-embedding-2-preview | 知識庫向量化 |
-| 向量資料庫 | Weaviate | 1.27.0 |
+| AI 平台 | Dify | 1.14.x |
+| LLM | qwen2.5vl:7b（本地 Ollama）| 對話生成 |
+| Embedding | bge-m3（本地 Ollama）| 知識庫向量化 |
+| 向量資料庫 | Weaviate | 1.27.0，自管（繞開 Dify worker）|
 | 關聯資料庫 | PostgreSQL | 15-alpine |
 | 快取/佇列 | Redis | 7-alpine |
 | 插件系統 | dify-plugin-daemon | 0.6.0-local |
-| 知識庫索引 | 倒排索引（經濟模式） | Jieba 中文分詞 |
 
 ---
 
@@ -119,10 +140,11 @@ USE_DIFY=true   →  自建語意搜尋（bge-m3 → Weaviate → qwen2.5vl:7b �
 │   ├── main.py              # FastAPI 主程式、Webhook 端點、路由註冊、BackgroundTasks
 │   ├── database.py          # SQLAlchemy 資料庫連線設定
 │   ├── models.py            # 資料庫模型定義（含 SystemSession / OcrPendingConfirm / ArchivedDocument）
-│   ├── handlers.py          # LINE 事件處理（訊息、OCR 確認、加好友、封鎖）
+│   ├── handlers.py          # LINE 事件處理（文字/圖片/語音/影片/檔案/OCR 確認/加好友/封鎖）
 │   ├── ocr_client.py        # OCR 引擎降級鏈（Ollama → EasyOCR → Mock）+ 欄位擷取 + 確認訊息格式
-│   ├── matcher.py           # 關鍵字模糊比對邏輯
-│   ├── dify_client.py       # Dify Chat API 客戶端（USE_DIFY=true 時使用）
+│   ├── stt_client.py        # 語音 STT（faster-whisper medium，M4A→WAV→文字）
+│   ├── dify_client.py       # 三層 RAG：bge-m3 embed → Weaviate qa_id → MySQL 原文 → Ollama 生成
+│   ├── matcher.py           # 關鍵字模糊比對邏輯（rapidfuzz，USE_DIFY=false 或 RAG 備援）
 │   ├── auth.py              # 使用者認證、DB-backed Session 管理、密碼雜湊
 │   ├── admin.py             # 管理員後台路由
 │   └── user_panel.py        # 小編使用者後台路由
@@ -147,7 +169,8 @@ USE_DIFY=true   →  自建語意搜尋（bge-m3 → Weaviate → qwen2.5vl:7b �
 │   ├── user_todo.html       # 待辦事項清單
 │   └── user_todo_create.html # 新增待辦事項
 ├── static/
-│   └── images/              # 用戶傳入的圖片/影片（LINE Content API 下載儲存）
+│   ├── images/              # 用戶傳入的圖片/影片（LINE Content API 下載儲存）
+│   └── files/               # 用戶傳入的檔案（PDF/文件等）
 ├── archived/                # OCR 確認後歸檔的文件（未來掛載 NAS NFS）
 │   ├── 死亡證明書/{YYYY}/{MM}/
 │   ├── 火化許可證/{YYYY}/{MM}/
@@ -159,12 +182,18 @@ USE_DIFY=true   →  自建語意搜尋（bge-m3 → Weaviate → qwen2.5vl:7b �
 │   └── nginx/
 │       └── dify_nginx.conf  # Dify 對外 Nginx 設定（Port 8080）
 ├── backups/                 # 資料庫備份存放目錄
+├── sync_qa_to_dify.py       # MySQL Q&A → Weaviate 同步腳本（三層架構）
+├── dify_knowledge.txt       # 知識庫參考文件（Q&A 內容範本）
 ├── .env                     # 環境變數（不納入版控）
 ├── .env.example             # 環境變數範本
 ├── requirements.txt         # Python 套件清單
 ├── start_tunnel.sh          # Cloudflare Tunnel 啟動 + 自動更新 Webhook
 ├── update_webhook.sh        # Webhook URL 手動更新腳本
 └── qa_template.csv          # Q&A 批次匯入範本
+
+/opt/models/                 # 非 Ollama 管理的模型統一存放
+├── whisper/                 # Whisper medium（faster-whisper，769MB）
+└── easyocr/                 # EasyOCR 繁體中文模型（295MB）
 ```
 
 ---
@@ -830,13 +859,16 @@ DIFY_API_KEY=your-dify-app-api-key
 
 ---
 
-*文件最後更新：2026-06-02（Q&A 自動同步 Weaviate）*
+*文件最後更新：2026-06-04（語音輸入 + 三層 RAG + 模型統一管理）*
 
 ### 主要功能更新記錄
 
 | 版本/日期 | 更新內容 |
 |-----------|---------|
-| 2026-06-02（最新） | **Q&A 自動同步**：後台新增/修改/刪除/訓練/CSV 匯入後自動背景同步 Weaviate，不需手動按鈕 |
+| 2026-06-04（最新）| **語音輸入（STT）**：新增 `app/stt_client.py`，LINE 語音訊息 → Whisper medium → 文字 → RAG 回覆；ffmpeg M4A→WAV 轉換；模型存放 `/opt/models/whisper/` |
+| 2026-06-04 | **三層式 RAG 架構**：Weaviate 只存 `qa_id`（不存原文），搜尋後回查 MySQL 取原文，消除資料重複儲存問題；`category` 欄位預留 metadata 過濾擴展 |
+| 2026-06-04 | **模型統一管理**：移除 qwen2.5:32b（19GB）、Qwen3-8B（16GB）；非 Ollama 模型統一至 `/opt/models/`（Whisper + EasyOCR）|
+| 2026-06-02 | **Q&A 自動同步**：後台新增/修改/刪除/訓練/CSV 匯入後自動背景同步 Weaviate，不需手動按鈕 |
 | 2026-06-02 | **自建語意搜尋架構**：以 bge-m3（Ollama）+ Weaviate（named vector）+ qwen2.5vl:7b 取代 Dify RAG pipeline，完全繞開 Dify worker 向量覆蓋問題；新增後台「同步至 AI 知識庫」按鈕；sync_qa_to_dify.py 腳本直接管理 Weaviate |
 | 2026-06-02 | **Dify 本地化**：整合 Ollama bge-m3 embedding、qwen2.5:32b LLM（純文字），知識庫改為向量語意搜尋（high_quality），解決倒排索引命中率低問題 |
 | 2026-05-31（最新） | **VM → GX10 遷移完成**：LINE Bot 正式運行於 192.168.31.103（ARM64），MySQL/Nginx/cloudflared 全部就緒，Webhook 自動切換，舊 VM 備援保留 |

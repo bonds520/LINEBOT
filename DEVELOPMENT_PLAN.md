@@ -215,6 +215,10 @@ EasyOCR 正常執行但無文字（如風景照）→ 回覆「未找到文字�
 | **已完成** | 自建語意搜尋（bge-m3 + Weaviate named vector）| ✅ |
 | **已完成** | 後台「同步至 AI 知識庫」按鈕 + sync_qa_to_dify.py | ✅ |
 | **已完成** | Q&A 新增/修改/刪除自動背景同步 Weaviate | ✅ |
+| **已完成** | 三層式 RAG：Weaviate 只存 qa_id，搜尋後回查 MySQL | ✅ |
+| **已完成** | 語音輸入 STT（Whisper medium + faster-whisper）| ✅ |
+| **已完成** | 模型統一管理（/opt/models/，移除未使用大模型）| ✅ |
+| **下一步** | 影像辨識前置判斷（文件 vs 生活照，減少無效 OCR）| ⏳ 待辦 |
 | **下一步** | 掛載 NAS，更新 ARCHIVE_PATH | ⏳ 待辦 |
 | **下一步** | VM 退役（建議觀察至 2026-06-14）| ⏳ 待辦 |
 
@@ -267,4 +271,4 @@ ARCHIVE_PATH=/opt/linebot/archived
 
 ---
 
-*文件最後更新：2026-06-02*
+*文件最後更新：2026-06-04*
