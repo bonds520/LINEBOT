@@ -388,8 +388,14 @@ USE_DIFY=true   →  自建語意搜尋（bge-m3 → Weaviate → qwen2.5vl:7b �
     └── 圖片/PDF OCR 背景任務
             ├─ reply_message：「收到您的文件，辨識中請稍候...」（立即）
             ├─ BackgroundTask → run_ocr_and_notify()
-            │   ├─ OCR 降級鏈：Ollama → EasyOCR → Mock
-            │   ├─ 語意解析：擷取亡者姓名、身分證字號、死亡日期、申請人
+            │   ├─ 第一步：classify_image()（輕量分類 prompt）
+            │   │    ├─ 生活照 → 回覆「收到您的生活照片」+ 待確認清單
+            │   │    ├─ 大頭照 → 回覆「收到您的大頭照」+ 待確認清單
+            │   │    └─ 文件 → 進入 OCR 流程
+            │   ├─ 第二步：OCR 降級鏈（Ollama → EasyOCR → Mock）
+            │   ├─ 多重關鍵字驗證（移除模型標籤後對實際文字驗證）
+            │   │    └─ 驗證失敗 → 用乾淨文字重新偵測文件類型
+            │   ├─ 國民身分證正/背面自動判斷
             │   └─ push_message：「收到您提供的 XXX 的 OOO 文件，以上資訊是否正確？」
             │                     + Quick Reply [✅ 正確，請歸檔] [❌ 辨識有誤]
             └─ 用戶確認後 → 歸檔至 /archived/{文件類型}/{YYYY}/{MM}/
@@ -859,13 +865,14 @@ DIFY_API_KEY=your-dify-app-api-key
 
 ---
 
-*文件最後更新：2026-06-04（語音輸入 + 三層 RAG + 模型統一管理）*
+*文件最後更新：2026-06-04（影像分類 + OCR 驗證強化 + 確認訊息簡化）*
 
 ### 主要功能更新記錄
 
 | 版本/日期 | 更新內容 |
 |-----------|---------|
-| 2026-06-04（最新）| **語音輸入（STT）**：新增 `app/stt_client.py`，LINE 語音訊息 → Whisper medium → 文字 → RAG 回覆；ffmpeg M4A→WAV 轉換；模型存放 `/opt/models/whisper/` |
+| 2026-06-04（最新）| **影像智能分類 + OCR 強化**：圖片兩階段處理（分類→OCR）；多重關鍵字驗證防止誤判；標籤移除後驗證防止模型自我循環；驗證失敗自動重新偵測；國民身分證正/背面自動識別；確認訊息簡化為「姓名＋證件種類」 |
+| 2026-06-04 | **語音輸入（STT）**：新增 `app/stt_client.py`，LINE 語音訊息 → Whisper medium → 文字 → RAG 回覆；ffmpeg M4A→WAV 轉換；模型存放 `/opt/models/whisper/` |
 | 2026-06-04 | **三層式 RAG 架構**：Weaviate 只存 `qa_id`（不存原文），搜尋後回查 MySQL 取原文，消除資料重複儲存問題；`category` 欄位預留 metadata 過濾擴展 |
 | 2026-06-04 | **模型統一管理**：移除 qwen2.5:32b（19GB）、Qwen3-8B（16GB）；非 Ollama 模型統一至 `/opt/models/`（Whisper + EasyOCR）|
 | 2026-06-02 | **Q&A 自動同步**：後台新增/修改/刪除/訓練/CSV 匯入後自動背景同步 Weaviate，不需手動按鈕 |

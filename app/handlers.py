@@ -419,19 +419,119 @@ def _archive_file(file_path: str, ocr_text: str) -> str:
 
 
 def run_ocr_and_notify(user_id: str, file_path: str, message_log_id: int | None):
-    """背景任務：執行 OCR 並以 push_message 回覆用戶結果。"""
-    from app.ocr_client import extract, format_confirm_message
+    """背景任務：圖片分類 → 文件走 OCR；生活照/大頭照直接通知。"""
+    from app.ocr_client import (
+        extract, format_confirm_message,
+        classify_image,
+        IMAGE_TYPE_DOCUMENT, IMAGE_TYPE_ID_PHOTO, IMAGE_TYPE_LIFE,
+        NON_DOCUMENT_RESULT,
+    )
     db = SessionLocal()
     try:
-        ocr_result, doc_type, fields = extract(file_path)
+        # ── 讀取圖片 ──────────────────────────────────────────────────
+        try:
+            with open(file_path, "rb") as f:
+                image_bytes = f.read()
+        except OSError as e:
+            logger.error("圖片讀取失敗：%s", e)
+            return
+
         messaging_api = get_messaging_api()
 
-        # 圖片中無文字（例如風景照）→ 直接告知，不建立歸檔流程
-        if ocr_result.startswith("【未找到文字】"):
+        # ── 第一步：快速分類（輕量 prompt，~10秒）────────────────────
+        image_type = classify_image(image_bytes)
+        logger.info("圖片分類結果：%s", image_type)
+
+        if image_type == IMAGE_TYPE_LIFE:
+            reply = "📷 收到您的生活照片！\n\n如需客服協助，我們將儘快為您回覆。"
+            messaging_api.push_message(PushMessageRequest(
+                to=user_id, messages=[TextMessage(text=reply)],
+            ))
+            user = db.query(__import__('app.models', fromlist=['LineUser']).LineUser)\
+                     .filter_by(line_user_id=user_id).first()
+            db.add(PendingQuestion(
+                line_user_id=user_id,
+                display_name=user.display_name if user else None,
+                question="[生活照] 用戶上傳了一張生活照片",
+            ))
+            db.commit()
+            return
+
+        if image_type == IMAGE_TYPE_ID_PHOTO:
+            reply = "🙂 收到您的大頭照！\n\n如需客服協助，我們將儘快為您回覆。"
+            messaging_api.push_message(PushMessageRequest(
+                to=user_id, messages=[TextMessage(text=reply)],
+            ))
+            user = db.query(__import__('app.models', fromlist=['LineUser']).LineUser)\
+                     .filter_by(line_user_id=user_id).first()
+            db.add(PendingQuestion(
+                line_user_id=user_id,
+                display_name=user.display_name if user else None,
+                question="[大頭照] 用戶上傳了一張大頭照",
+            ))
+            db.commit()
+            return
+
+        # ── 第二步：正式文件 → 完整 OCR ──────────────────────────────
+        ocr_result, doc_type, fields = extract(file_path)
+
+        # 模型明確判斷非文件
+        if ocr_result == NON_DOCUMENT_RESULT or ocr_result.startswith("【非文件圖片】"):
+            reply = "📷 收到您的照片！這張圖片不像是文件，如需客服協助，我們將儘快為您回覆。"
             messaging_api.push_message(PushMessageRequest(
                 to=user_id,
-                messages=[TextMessage(text=ocr_result)],
+                messages=[TextMessage(text=reply)],
             ))
+            user = db.query(__import__('app.models', fromlist=['LineUser']).LineUser)\
+                     .filter_by(line_user_id=user_id).first()
+            db.add(PendingQuestion(
+                line_user_id=user_id,
+                display_name=user.display_name if user else None,
+                question="[非文件照片] 模型判斷圖片非正式文件",
+            ))
+            db.commit()
+            return
+
+        # OCR 未找到文字 → 分類可能誤判，當生活照處理
+        if ocr_result.startswith("【未找到文字】"):
+            reply = (
+                "📷 收到您的照片，未在圖片中找到文件內容。\n\n"
+                "若您要上傳正式文件，請確認圖片清晰且文字可見，\n"
+                "或重新拍攝後上傳。\n\n"
+                "如需客服協助，我們將儘快為您回覆。"
+            )
+            messaging_api.push_message(PushMessageRequest(
+                to=user_id,
+                messages=[TextMessage(text=reply)],
+            ))
+            user = db.query(__import__('app.models', fromlist=['LineUser']).LineUser)\
+                     .filter_by(line_user_id=user_id).first()
+            db.add(PendingQuestion(
+                line_user_id=user_id,
+                display_name=user.display_name if user else None,
+                question="[非文件照片] 用戶上傳了一張未含文字的照片",
+            ))
+            db.commit()
+            return
+
+        # 文件類型未知且無任何有效欄位 → 很可能是非文件照片
+        if doc_type in ("未分類", "其他") and not any(fields.values()):
+            reply = (
+                "📷 收到您的照片，未能辨識為殯葬相關文件。\n\n"
+                "若您要上傳文件，請確認圖片清晰且文字完整可見，\n"
+                "或重新拍攝後上傳。如需客服協助，我們將儘快為您回覆。"
+            )
+            messaging_api.push_message(PushMessageRequest(
+                to=user_id, messages=[TextMessage(text=reply)],
+            ))
+            user = db.query(__import__('app.models', fromlist=['LineUser']).LineUser)\
+                     .filter_by(line_user_id=user_id).first()
+            db.add(PendingQuestion(
+                line_user_id=user_id,
+                display_name=user.display_name if user else None,
+                question="[非文件照片] 用戶上傳無法辨識的圖片",
+            ))
+            db.commit()
             return
 
         expires_at = datetime.utcnow() + timedelta(minutes=30)

@@ -11,6 +11,11 @@ OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "")
 OLLAMA_MODEL   = os.getenv("OLLAMA_MODEL", "qwen2.5vl:7b")
 _TIMEOUT       = 60.0
 
+# 圖片分類類型常數
+IMAGE_TYPE_DOCUMENT  = "document"   # 正式文件／證件 → 進行 OCR
+IMAGE_TYPE_ID_PHOTO  = "id_photo"   # 大頭照
+IMAGE_TYPE_LIFE      = "life"       # 生活照
+
 # 文件類型關鍵字（依優先順序排列，越具體的關鍵字放越前面）
 _DOC_TYPE_KEYWORDS = {
     "死亡證明書": [
@@ -26,11 +31,12 @@ _DOC_TYPE_KEYWORDS = {
         "起掘許可證", "墳墓起掘", "起掘地點", "公墓", "撿骨", "起掘許可", "起掘",
     ],
     "國民身分證": [
-        "中華民國國民身分證", "統一編號", "役別", "配偶", "身分證",
+        "中華民國國民身分證", "國民身分證", "統一編號", "役別", "配偶", "身分證",
+        "出生年月日", "發證日期", "換發",    # 正面特有欄位
     ],
 }
 
-# Ollama 提示詞：要求結構化標籤輸出
+# OCR 提示詞（正式文件辨識用）
 _OCR_PROMPT = (
     "請仔細辨識這份殯葬相關文件的所有文字，以繁體中文輸出。\n\n"
     "依序輸出以下格式（欄位無法辨識時填「無」）：\n"
@@ -43,6 +49,14 @@ _OCR_PROMPT = (
     "【完整辨識文字】（條列文件上的所有其他文字）\n\n"
     "注意：遷出證明書的亡者姓名需自動去除「故」與「君」字。\n"
     "若圖片模糊無法辨識，僅回覆：【無法辨識】"
+)
+
+# 快速分類提示詞（輕量，只判斷圖片類型，不做 OCR）
+_CLASSIFY_PROMPT = (
+    "這張圖片是什麼類型？只回覆以下三個詞之一，不要加任何說明：\n"
+    "文件（含有大量中文文字的政府公文、證明書、身分證等正式文件）\n"
+    "大頭照（人臉特寫、人像照）\n"
+    "生活照（風景、食物、物品、日常生活、建築等非文件圖片）"
 )
 
 # Mock — 僅在所有 OCR 引擎均不可用時使用
@@ -66,6 +80,68 @@ NO_TEXT_RESULT = (
     "若您要上傳文件，請確認圖片清晰且文字可見，\n"
     "或重新拍攝後上傳。"
 )
+
+# 模型明確回應「這不是文件」
+NON_DOCUMENT_RESULT = "【非文件圖片】"
+LIFE_PHOTO_RESULT   = "【生活照】"
+ID_PHOTO_RESULT     = "【大頭照】"
+
+# ── 文件類型驗證：檢查 OCR 原文是否真的含有對應關鍵字 ──────────────
+# 文件類型驗證規則：
+# 每種文件需要「必要關鍵字組合」同時出現，防止一般文字誤判
+# rules: list of (required_keywords, min_matches)
+#   - required_keywords: 這組裡至少需要符合 min_matches 個
+#   - 所有 rule 都必須通過
+_DOC_VALIDATION_RULES = {
+    "死亡證明書": [
+        (["死亡證明書", "死亡證明"], 1),       # 必須有「死亡證明」字樣
+        (["死亡", "死者", "亡者", "往生"], 1),  # 且有死亡相關詞
+    ],
+    "火化許可證": [
+        (["火化許可證", "火化許可", "准予火化"], 1),
+        (["火化", "殯葬", "遺體", "骨灰"], 1),
+    ],
+    "遷出證明書": [
+        (["遷出證明書", "遷出證明", "進塔證明"], 1),
+        (["遷出", "骨灰", "骨骸", "遷葬"], 1),
+    ],
+    "起掘許可證": [
+        (["起掘許可證", "起掘許可", "起掘"], 1),
+        (["公墓", "撿骨", "墳墓", "骨骸", "起掘地點"], 1),
+    ],
+    "國民身分證": [
+        # 條件一：正面標題、背面役別、或正面特有欄位（任一即可）
+        (["中華民國國民身分證", "國民身分證", "身分證", "役別",
+          "出生年月日", "發證日期", "換發"], 1),
+        # 條件二：正面或背面任一欄位標籤
+        (["統一編號", "役別", "配偶", "出生地", "住址",
+          "出生年月日", "出生日期", "發證日期", "發證",
+          "性別", "姓名", "換發", "戶籍地址", "父", "母"], 1),
+    ],
+}
+
+def _validate_doc_type(doc_type: str, ocr_text: str) -> bool:
+    """
+    多重關鍵字驗證。
+    重要：先移除模型自己產生的【標籤】行，只對實際文件內容做驗證，
+    避免模型寫了「【文件類型】死亡證明書」後自我驗證通過的問題。
+    """
+    if doc_type not in _DOC_VALIDATION_RULES:
+        return True  # 「其他」或「未分類」不需驗證
+
+    # 移除所有 【標籤】內容行（如「【文件類型】死亡證明書」）
+    clean_text = re.sub(r'【[^】]+】[^\n]*', '', ocr_text)
+    logger.debug("驗證用文字（去除標籤後）前80字：%s", clean_text[:80])
+
+    for required_keywords, min_matches in _DOC_VALIDATION_RULES[doc_type]:
+        matched = sum(1 for kw in required_keywords if kw in clean_text)
+        if matched < min_matches:
+            logger.warning(
+                "驗證失敗：%s 需要 %s 中至少 %d 個，原始文字中只符合 %d 個",
+                doc_type, required_keywords, min_matches, matched
+            )
+            return False
+    return True
 
 # ── 日期 / 姓名 / 身分證 正規表示式 ──────────────────────────────────
 _ROC_DATE_RE = re.compile(r'民國\s*(\d{1,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日')
@@ -169,32 +245,59 @@ def _extract_fields_regex(text: str, doc_type: str) -> dict:
     }
 
 
+def _detect_id_card_side(ocr_text: str) -> str:
+    """判斷國民身分證是正面或背面。
+
+    正面欄位：中華民國國民身分證、姓名、出生年月日、性別、發證日期、換發
+    背面欄位：役別、出生地、住址、配偶、父、母
+
+    優先判斷正面：有明確的「中華民國國民身分證」標題，或正面欄位 ≥ 2 個
+    其次判斷背面：背面欄位 ≥ 2 個
+    """
+    front_keywords = [
+        "中華民國國民身分證", "國民身分證",    # 正面標題
+        "出生年月日",                          # 正面欄位標籤
+        "性別",                               # 正面欄位標籤
+        "發證日期", "換發",                    # 正面發證資訊
+    ]
+    back_keywords = [
+        "役別",     # 背面特有（軍人役別）
+        "出生地",   # 背面欄位
+        "住址",     # 背面欄位
+        "配偶",     # 背面欄位
+        "父",       # 背面欄位
+        "母",       # 背面欄位（注意：會誤匹配含「母」的文字，依靠 count 過濾）
+    ]
+    front_count = sum(1 for kw in front_keywords if kw in ocr_text)
+    back_count  = sum(1 for kw in back_keywords  if kw in ocr_text)
+
+    logger.debug("身分證正/背面判斷：正面符合 %d 個，背面符合 %d 個", front_count, back_count)
+
+    # 背面特有欄位 ≥ 2 且多於正面 → 背面
+    if back_count >= 2 and back_count >= front_count:
+        return "背面"
+    # 否則預設正面
+    return "正面"
+
+
 def format_confirm_message(doc_type: str, fields: dict, ocr_text: str) -> str:
     """產生給用戶的確認訊息：收到您提供的 XXX 的 XXXX 文件，是否正確？"""
     # 優先用亡者姓名，其次申請人姓名
     name = fields.get("亡者姓名") or fields.get("申請人姓名")
-    label = doc_type if doc_type not in ("未分類", "其他") else "文件"
+
+    # 國民身分證加註正面/背面
+    if doc_type == "國民身分證":
+        side = _detect_id_card_side(ocr_text)
+        label = f"國民身分證（{side}）"
+    else:
+        label = doc_type if doc_type not in ("未分類", "其他") else "文件"
 
     if name:
         header = f"📄 收到您提供的 {name} 的{label}"
     else:
         header = f"📄 收到您提供的{label}"
 
-    lines = [header, ""]
-
-    field_map = [
-        ("亡者姓名",   "亡者姓名"),
-        ("身分證字號", "身分證字號"),
-        ("死亡日期",   "死亡日期"),
-        ("出生日期",   "出生日期"),
-        ("申請人姓名", "申請人"),
-    ]
-    for key, label_str in field_map:
-        if fields.get(key):
-            lines.append(f"{label_str}：{fields[key]}")
-
-    lines += ["", "以上資訊是否正確？"]
-    return "\n".join(lines)
+    return f"{header}\n\n以上資訊是否正確？"
 
 
 # ── EasyOCR 單例 ──────────────────────────────────────────────────────
@@ -250,6 +353,51 @@ def _ocr_via_ollama(image_bytes: bytes) -> str | None:
         return None
 
 
+def classify_image(image_bytes: bytes) -> str:
+    """
+    用 qwen2.5vl:7b 判斷圖片類型。
+    回傳：IMAGE_TYPE_DOCUMENT / IMAGE_TYPE_ID_PHOTO / IMAGE_TYPE_LIFE
+    Ollama 不可用時預設回傳 document（保守策略，走 OCR 流程）。
+    """
+    if not OLLAMA_API_URL:
+        return IMAGE_TYPE_DOCUMENT
+
+    b64 = base64.b64encode(image_bytes).decode()
+    payload = {
+        "model": OLLAMA_MODEL,
+        "prompt": _CLASSIFY_PROMPT,
+        "images": [b64],
+        "stream": False,
+    }
+    try:
+        resp = httpx.post(
+            f"{OLLAMA_API_URL.rstrip('/')}/api/generate",
+            json=payload,
+            timeout=_TIMEOUT,
+        )
+        resp.raise_for_status()
+        result = resp.json().get("response", "").strip()
+        result_lower = result.lower()
+        logger.info("圖片分類原始回應：%s", result[:40])
+
+        if "大頭照" in result or "id_photo" in result_lower:
+            logger.info("圖片分類：大頭照")
+            return IMAGE_TYPE_ID_PHOTO
+        elif "生活照" in result or "life" in result_lower:
+            logger.info("圖片分類：生活照")
+            return IMAGE_TYPE_LIFE
+        elif "文件" in result or "document" in result_lower:
+            logger.info("圖片分類：文件")
+            return IMAGE_TYPE_DOCUMENT
+        else:
+            # 無法判斷時，保守策略：走 OCR
+            logger.warning("圖片分類無法判斷（回應：%s），預設走文件 OCR", result[:40])
+            return IMAGE_TYPE_DOCUMENT
+    except Exception as e:
+        logger.warning("圖片分類失敗，預設走文件 OCR：%s", e)
+        return IMAGE_TYPE_DOCUMENT
+
+
 def _ocr_via_easyocr(image_bytes: bytes) -> str | None:
     reader = _get_easyocr_reader()
     if reader is None:
@@ -266,6 +414,14 @@ def _run_ocr(image_bytes: bytes) -> str:
     """依序嘗試：Ollama → EasyOCR → Mock（僅在引擎不可用時）"""
     result = _ocr_via_ollama(image_bytes)
     if result:
+        r = result.strip()
+        # 模型回應分類標籤 → 直接回傳，不走 EasyOCR
+        if "【生活照】" in r:
+            return LIFE_PHOTO_RESULT
+        if "【大頭照】" in r:
+            return ID_PHOTO_RESULT
+        if "【非文件圖片】" in r:
+            return NON_DOCUMENT_RESULT
         return result
 
     logger.info("使用 EasyOCR 進行辨識")
@@ -296,6 +452,21 @@ def extract_from_image(file_path: str) -> tuple[str, str, dict]:
     if not doc_type:
         doc_type = _detect_doc_type(ocr_text)
         fields = _extract_fields_regex(ocr_text, doc_type)
+
+    # 驗證文件類型是否與 OCR 原文相符，防止模型亂猜
+    if doc_type and not _validate_doc_type(doc_type, ocr_text):
+        logger.warning("文件類型驗證失敗：模型猜測 %s，用實際文件內容重新偵測", doc_type)
+        # 移除模型自己產生的標籤行，只保留實際文件內容
+        clean_text = re.sub(r'【[^】]+】[^\n]*', '', ocr_text)
+        # 用關鍵字重新偵測
+        doc_type = _detect_doc_type(clean_text)
+        if doc_type != "未分類":
+            fields = _extract_fields_regex(clean_text, doc_type)
+            logger.info("重新偵測結果：%s", doc_type)
+        else:
+            fields = {}
+            logger.warning("重新偵測仍無法辨識，設為未分類")
+
     return ocr_text, doc_type, fields
 
 
