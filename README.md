@@ -321,9 +321,13 @@ USE_DIFY=true   →  自建語意搜尋（bge-m3 → Weaviate → qwen2.5vl:7b �
 | message_log_id | INT | 關聯 MessageLog.id |
 | file_path | VARCHAR(512) | 本地檔案路徑 |
 | ocr_result | TEXT | OCR 辨識結果（原始文字）|
+| doc_type | VARCHAR(64) | 已驗證修正的文件類型（歸檔時直接使用）|
+| detected_name | VARCHAR(255) | 已擷取的姓名（亡者或申請人，用於檔名）|
 | status | ENUM | waiting / confirmed / rejected |
 | expires_at | DATETIME | 30 分鐘逾時 |
 | created_at | DATETIME | 建立時間 |
+
+> **歸檔一致性**：`doc_type` 與 `detected_name` 於辨識當下（經驗證修正後）寫入，確認歸檔時直接取用，避免重新解析原始文字拿到模型最初的錯誤猜測。
 
 ### `archived_documents` — 已歸檔文件
 
@@ -865,13 +869,14 @@ DIFY_API_KEY=your-dify-app-api-key
 
 ---
 
-*文件最後更新：2026-06-04（影像分類 + OCR 驗證強化 + 確認訊息簡化）*
+*文件最後更新：2026-06-04（歸檔重新命名 + 歸檔一致性修復）*
 
 ### 主要功能更新記錄
 
 | 版本/日期 | 更新內容 |
 |-----------|---------|
-| 2026-06-04（最新）| **影像智能分類 + OCR 強化**：圖片兩階段處理（分類→OCR）；多重關鍵字驗證防止誤判；標籤移除後驗證防止模型自我循環；驗證失敗自動重新偵測；國民身分證正/背面自動識別；確認訊息簡化為「姓名＋證件種類」 |
+| 2026-06-04（最新）| **歸檔重新命名 + 一致性修復**：歸檔檔名改為「姓名-證件類別」；身分證標註正/背面；`ocr_pending_confirms` 新增 `doc_type`/`detected_name` 欄位，於辨識當下存入已驗證值，修復「歸檔類型/姓名與確認訊息不一致」的 bug；ARCHIVE_PATH 支援 SMB 網路掛載 |
+| 2026-06-04 | **影像智能分類 + OCR 強化**：圖片兩階段處理（分類→OCR）；多重關鍵字驗證防止誤判；標籤移除後驗證防止模型自我循環；驗證失敗自動重新偵測；國民身分證正/背面自動識別；確認訊息簡化為「姓名＋證件種類」 |
 | 2026-06-04 | **語音輸入（STT）**：新增 `app/stt_client.py`，LINE 語音訊息 → Whisper medium → 文字 → RAG 回覆；ffmpeg M4A→WAV 轉換；模型存放 `/opt/models/whisper/` |
 | 2026-06-04 | **三層式 RAG 架構**：Weaviate 只存 `qa_id`（不存原文），搜尋後回查 MySQL 取原文，消除資料重複儲存問題；`category` 欄位預留 metadata 過濾擴展 |
 | 2026-06-04 | **模型統一管理**：移除 qwen2.5:32b（19GB）、Qwen3-8B（16GB）；非 Ollama 模型統一至 `/opt/models/`（Whisper + EasyOCR）|

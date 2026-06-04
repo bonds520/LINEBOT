@@ -83,11 +83,18 @@ def handle_text_message(event, db: Session):
             messaging_api = get_messaging_api()
             if text == OCR_CONFIRM_TEXT:
                 ocr_text = pending_ocr.ocr_result or ""
-                archived_path = _archive_file(pending_ocr.file_path, ocr_text)
-                from app.ocr_client import _parse_structured, _detect_doc_type
-                doc_type, _ = _parse_structured(ocr_text)
+                # 使用辨識當下已驗證修正的類型與姓名，確保與確認訊息一致
+                doc_type = pending_ocr.doc_type
+                detected_name = pending_ocr.detected_name
                 if not doc_type:
-                    doc_type = _detect_doc_type(ocr_text)
+                    from app.ocr_client import _parse_structured, _detect_doc_type
+                    doc_type, _f = _parse_structured(ocr_text)
+                    if not doc_type:
+                        doc_type = _detect_doc_type(ocr_text)
+                archived_path = _archive_file(
+                    pending_ocr.file_path, ocr_text,
+                    doc_type=doc_type, name=detected_name,
+                )
                 display_name, _ = fetch_profile(messaging_api, user_id)
                 db.add(ArchivedDocument(
                     line_user_id=user_id,
@@ -405,16 +412,47 @@ def _doc_type_from_ocr(ocr_text: str) -> str:
     return _detect_doc_type(ocr_text)
 
 
-def _archive_file(file_path: str, ocr_text: str) -> str:
-    doc_type = _doc_type_from_ocr(ocr_text)
+def _archive_file(file_path: str, ocr_text: str, doc_type: str = None, name: str = None) -> str:
+    """
+    歸檔檔案。doc_type 與 name 應由呼叫端傳入（已驗證修正的值）。
+    若未傳入才退而求其次重新解析（向後相容）。
+    """
+    from app.ocr_client import _parse_structured, _detect_doc_type, _detect_id_card_side
+
+    # 優先使用傳入的已驗證值；未傳入才重新解析
+    if not doc_type:
+        doc_type, fields = _parse_structured(ocr_text)
+        if not doc_type:
+            doc_type = _detect_doc_type(ocr_text)
+        if name is None and fields:
+            name = fields.get("亡者姓名") or fields.get("申請人姓名")
+
+    # 國民身分證加上正/背面（依原始 OCR 文字判斷）
+    label = doc_type
+    if doc_type == "國民身分證":
+        side = _detect_id_card_side(ocr_text)
+        label = f"國民身分證（{side}）"
+
+    # 組成檔名：姓名-證件類別（無姓名時用「未知」）
+    safe_name = re.sub(r'[\\/:*?"<>|]', '', name) if name else "未知"
+    ext = os.path.splitext(file_path)[1].lower() or ".jpg"
+    base_filename = f"{safe_name}-{label}{ext}"
+
+    # 建立目錄（依 doc_type 分類）
     archive_base = os.getenv("ARCHIVE_PATH", os.path.join(os.path.dirname(__file__), "..", "archived"))
     now = datetime.utcnow()
     dest_dir = os.path.join(archive_base, doc_type, str(now.year), f"{now.month:02d}")
     os.makedirs(dest_dir, exist_ok=True)
-    ts = now.strftime("%Y%m%d_%H%M%S")
-    basename = os.path.basename(file_path)
-    dest_path = os.path.join(dest_dir, f"{ts}_{basename}")
+
+    # 同名檔案加序號避免覆蓋
+    dest_path = os.path.join(dest_dir, base_filename)
+    if os.path.exists(dest_path):
+        ts = now.strftime("%H%M%S")
+        dest_path = os.path.join(dest_dir, f"{safe_name}-{label}_{ts}{ext}")
+
     shutil.copy2(file_path, dest_path)
+    logger.info("歸檔：%s → %s（類型=%s 姓名=%s）",
+                os.path.basename(file_path), os.path.basename(dest_path), doc_type, safe_name)
     return dest_path
 
 
@@ -534,12 +572,17 @@ def run_ocr_and_notify(user_id: str, file_path: str, message_log_id: int | None)
             db.commit()
             return
 
+        # 存下「已驗證修正」的類型與姓名，歸檔時直接使用，不再重新解析
+        detected_name = (fields.get("亡者姓名") or fields.get("申請人姓名")) if fields else None
+
         expires_at = datetime.utcnow() + timedelta(minutes=30)
         ocr_record = OcrPendingConfirm(
             line_user_id=user_id,
             message_log_id=message_log_id,
             file_path=file_path,
             ocr_result=ocr_result,
+            doc_type=doc_type,
+            detected_name=detected_name,
             status="waiting",
             expires_at=expires_at,
         )

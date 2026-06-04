@@ -140,6 +140,8 @@ class OcrPendingConfirm(Base):
     message_log_id = Column(Integer, nullable=True)
     file_path = Column(String(512), nullable=False)
     ocr_result = Column(Text, nullable=True)
+    doc_type = Column(String(64), nullable=True)       # 已驗證修正的文件類型
+    detected_name = Column(String(255), nullable=True) # 已擷取的姓名（亡者或申請人）
     status = Column(Enum("waiting", "confirmed", "rejected"), default="waiting", index=True)
     expires_at = Column(DateTime, nullable=False)
     created_at = Column(DateTime, server_default=func.now())
