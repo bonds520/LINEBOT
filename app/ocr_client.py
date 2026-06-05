@@ -9,12 +9,7 @@ logger = logging.getLogger(__name__)
 
 OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "")
 OLLAMA_MODEL   = os.getenv("OLLAMA_MODEL", "qwen2.5vl:7b")
-_TIMEOUT       = 60.0
-
-# 圖片分類類型常數
-IMAGE_TYPE_DOCUMENT  = "document"   # 正式文件／證件 → 進行 OCR
-IMAGE_TYPE_ID_PHOTO  = "id_photo"   # 大頭照
-IMAGE_TYPE_LIFE      = "life"       # 生活照
+_TIMEOUT       = 180.0
 
 # 文件類型關鍵字（依優先順序排列，越具體的關鍵字放越前面）
 _DOC_TYPE_KEYWORDS = {
@@ -36,27 +31,21 @@ _DOC_TYPE_KEYWORDS = {
     ],
 }
 
-# OCR 提示詞（正式文件辨識用）
+# OCR 提示詞（同時處理圖片分類與文件辨識）
 _OCR_PROMPT = (
-    "請仔細辨識這份殯葬相關文件的所有文字，以繁體中文輸出。\n\n"
-    "依序輸出以下格式（欄位無法辨識時填「無」）：\n"
+    "請判斷這張圖片的類型，並依照以下規則回應：\n\n"
+    "★ 若圖片為人臉特寫、人像照，僅回覆：【大頭照】\n"
+    "★ 若圖片為風景、食物、物品、日常生活等非文件照片，僅回覆：【生活照】\n"
+    "★ 若圖片為正式文件（公文、證明書、身分證等），請仔細辨識所有文字，以繁體中文依序輸出：\n\n"
     "【文件類型】死亡證明書／火化許可證／遷出證明書／起掘許可證／國民身分證／其他\n"
     "【亡者姓名】\n"
-    "【身分證字號】（1碼大寫英文+9碼數字）\n"
-    "【出生日期】（YYYY-MM-DD，民國年請換算：西元=民國+1911）\n"
-    "【死亡日期】（YYYY-MM-DD，民國年請換算）\n"
-    "【申請人姓名】\n"
-    "【完整辨識文字】（條列文件上的所有其他文字）\n\n"
+    "【身分證字號】（1碼大寫英文+9碼數字，無則填「無」）\n"
+    "【出生日期】（YYYY-MM-DD，民國年請換算：西元=民國+1911，無則填「無」）\n"
+    "【死亡日期】（YYYY-MM-DD，民國年請換算，無則填「無」）\n"
+    "【申請人姓名】（無則填「無」）\n"
+    "【完整辨識文字】（條列文件上的所有其他可見文字）\n\n"
     "注意：遷出證明書的亡者姓名需自動去除「故」與「君」字。\n"
-    "若圖片模糊無法辨識，僅回覆：【無法辨識】"
-)
-
-# 快速分類提示詞（輕量，只判斷圖片類型，不做 OCR）
-_CLASSIFY_PROMPT = (
-    "這張圖片是什麼類型？只回覆以下三個詞之一，不要加任何說明：\n"
-    "文件（含有大量中文文字的政府公文、證明書、身分證等正式文件）\n"
-    "大頭照（人臉特寫、人像照）\n"
-    "生活照（風景、食物、物品、日常生活、建築等非文件圖片）"
+    "若圖片模糊無法辨識文字，僅回覆：【無法辨識】"
 )
 
 # Mock — 僅在所有 OCR 引擎均不可用時使用
@@ -193,17 +182,28 @@ def _detect_doc_type(ocr_text: str) -> str:
 
 
 def _parse_structured(text: str) -> tuple[str | None, dict]:
-    """解析 Ollama 結構化標籤輸出；若無標籤則回傳 (None, {})。"""
-    if "【文件類型】" not in text:
+    """解析 Ollama 結構化標籤輸出；若無標籤則回傳 (None, {})。
+    支援兩種格式：
+      格式 A：【文件類型】火化許可證  （OCR prompt 預期格式）
+      格式 B：【火化許可證】          （模型直接用文件名稱當標籤）
+    """
+    # 格式 B：模型直接輸出 【已知文件類型】 作為首行
+    doc_type_from_tag = next(
+        (t for t in _DOC_TYPE_KEYWORDS if f"【{t}】" in text), None
+    )
+    # 格式 A 需要 【文件類型】 標籤
+    if "【文件類型】" not in text and not doc_type_from_tag:
         return None, {}
 
     def _tag(name: str) -> str | None:
         m = re.search(rf'【{name}】\s*([^\n【]+)', text)
         v = m.group(1).strip() if m else None
+        if v:
+            v = re.sub(r'^[：:\-\s]+', '', v).strip()  # 去掉 LLM 可能加的前導冒號/破折號
         return None if v in (None, "無", "null", "—", "N/A", "") else v
 
     raw_type = _tag("文件類型") or ""
-    doc_type = next((t for t in _DOC_TYPE_KEYWORDS if t in raw_type), None)
+    doc_type = next((t for t in _DOC_TYPE_KEYWORDS if t in raw_type), None) or doc_type_from_tag
     if not doc_type:
         doc_type = _detect_doc_type(text)
 
@@ -353,49 +353,47 @@ def _ocr_via_ollama(image_bytes: bytes) -> str | None:
         return None
 
 
-def classify_image(image_bytes: bytes) -> str:
-    """
-    用 qwen2.5vl:7b 判斷圖片類型。
-    回傳：IMAGE_TYPE_DOCUMENT / IMAGE_TYPE_ID_PHOTO / IMAGE_TYPE_LIFE
-    Ollama 不可用時預設回傳 document（保守策略，走 OCR 流程）。
+_PDF_TEXT_PROMPT = (
+    "以下是從 PDF 文件萃取的文字，請仔細閱讀並提取欄位值。\n\n"
+    "---文件內容開始---\n"
+    "{text}\n"
+    "---文件內容結束---\n\n"
+    "請依以下格式輸出，每行一個欄位，【標籤】後直接接文件中的實際值（不加冒號或破折號）：\n"
+    "【文件類型】（死亡證明書／火化許可證／遷出證明書／起掘許可證／國民身分證／其他，擇一填入）\n"
+    "【亡者姓名】（填入文件中亡者的真實姓名，去除「故」與「君」字，無則填「無」）\n"
+    "【身分證字號】（1碼大寫英文+9碼數字格式，無則填「無」）\n"
+    "【出生日期】（YYYY-MM-DD格式，民國年換算：西元=民國年+1911，無則填「無」）\n"
+    "【死亡日期】（YYYY-MM-DD格式，民國年換算，無則填「無」）\n"
+    "【申請人姓名】（填入申請人的真實姓名，無則填「無」）\n"
+)
+
+
+def _extract_fields_via_llm(embedded_text: str) -> tuple[str, dict]:
+    """將 PDF 嵌入文字送 Ollama（文字模式，不需圖片）提取結構化欄位。
+    回傳 (doc_type, fields)；Ollama 不可用時回傳 ('', {})。
     """
     if not OLLAMA_API_URL:
-        return IMAGE_TYPE_DOCUMENT
+        return "", {}
 
-    b64 = base64.b64encode(image_bytes).decode()
-    payload = {
-        "model": OLLAMA_MODEL,
-        "prompt": _CLASSIFY_PROMPT,
-        "images": [b64],
-        "stream": False,
-    }
+    prompt = _PDF_TEXT_PROMPT.format(text=embedded_text[:3000])
     try:
         resp = httpx.post(
             f"{OLLAMA_API_URL.rstrip('/')}/api/generate",
-            json=payload,
-            timeout=_TIMEOUT,
+            json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False},
+            timeout=60.0,
         )
         resp.raise_for_status()
         result = resp.json().get("response", "").strip()
-        result_lower = result.lower()
-        logger.info("圖片分類原始回應：%s", result[:40])
-
-        if "大頭照" in result or "id_photo" in result_lower:
-            logger.info("圖片分類：大頭照")
-            return IMAGE_TYPE_ID_PHOTO
-        elif "生活照" in result or "life" in result_lower:
-            logger.info("圖片分類：生活照")
-            return IMAGE_TYPE_LIFE
-        elif "文件" in result or "document" in result_lower:
-            logger.info("圖片分類：文件")
-            return IMAGE_TYPE_DOCUMENT
-        else:
-            # 無法判斷時，保守策略：走 OCR
-            logger.warning("圖片分類無法判斷（回應：%s），預設走文件 OCR", result[:40])
-            return IMAGE_TYPE_DOCUMENT
+        logger.debug("PDF 文字 LLM 提取結果：%s", result[:200])
     except Exception as e:
-        logger.warning("圖片分類失敗，預設走文件 OCR：%s", e)
-        return IMAGE_TYPE_DOCUMENT
+        logger.warning("PDF 文字 LLM 提取失敗，fallback 至 regex：%s", e)
+        return "", {}
+
+    doc_type, fields = _parse_structured(result)
+    if not doc_type:
+        doc_type = _detect_doc_type(embedded_text)
+        fields = _extract_fields_regex(embedded_text, doc_type)
+    return doc_type, fields
 
 
 def _ocr_via_easyocr(image_bytes: bytes) -> str | None:
@@ -510,11 +508,13 @@ def extract_from_pdf(file_path: str) -> tuple[str, str, dict]:
     except Exception as e:
         logger.error("PDF 文字萃取失敗：%s", e)
 
-    # 嵌入文字夠長且版面不亂序 → 直接使用
+    # 嵌入文字夠長且版面不亂序 → Ollama 文字模式提取欄位（比 regex 準確）
     if len(embedded_text) > 100 and _is_good_pdf_text(embedded_text):
-        logger.info("使用 PDF 嵌入文字（%d 字元）", len(embedded_text))
-        doc_type = _detect_doc_type(embedded_text)
-        fields = _extract_fields_regex(embedded_text, doc_type)
+        logger.info("使用 PDF 嵌入文字（%d 字元），送 LLM 提取欄位", len(embedded_text))
+        doc_type, fields = _extract_fields_via_llm(embedded_text)
+        if not doc_type:
+            doc_type = _detect_doc_type(embedded_text)
+            fields = _extract_fields_regex(embedded_text, doc_type)
         return embedded_text, doc_type, fields
 
     # 否則轉圖片走 OCR（涵蓋：無嵌入文字、表單亂序、掃描 PDF）

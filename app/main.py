@@ -89,10 +89,10 @@ async def webhook(request: Request, background_tasks: BackgroundTasks, db: Sessi
             elif isinstance(event, MessageEvent) and isinstance(event.message, AudioMessageContent):
                 result = handlers.handle_audio_message(event, db)
                 if result:
-                    audio_bytes, user_id = result
+                    audio_bytes, user_id, reply_token = result
                     from app.database import SessionLocal
                     background_tasks.add_task(
-                        handlers.run_stt_and_reply, audio_bytes, user_id, SessionLocal
+                        handlers.run_stt_and_reply, audio_bytes, user_id, SessionLocal, reply_token
                     )
             elif isinstance(event, MessageEvent) and isinstance(event.message, VideoMessageContent):
                 handlers.handle_video_message(event, db)

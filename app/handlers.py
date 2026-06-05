@@ -20,11 +20,18 @@ logger = logging.getLogger(__name__)
 
 OCR_CONFIRM_TEXT  = "✅ 正確，請歸檔"
 OCR_REJECT_TEXT   = "❌ 辨識有誤，重新上傳"
+OCR_VIEW_TEXT     = "🔍 查看辨識結果"
 
 
 def get_messaging_api() -> MessagingApi:
     configuration = Configuration(access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
     return MessagingApi(ApiClient(configuration))
+
+
+def _download_content(message_id: str) -> bytes:
+    configuration = Configuration(access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
+    with ApiClient(configuration) as api_client:
+        return MessagingApiBlob(api_client).get_message_content(message_id)
 
 
 def upsert_user(db: Session, line_user_id: str, display_name: str = None, picture_url: str = None):
@@ -66,12 +73,132 @@ def fetch_profile(messaging_api: MessagingApi, user_id: str):
         return None, None
 
 
+def _resolve_qa_reply(text: str, question: str, user_id: str, display_name: str | None, db: Session) -> str:
+    """Dify → rapidfuzz → 人工客服 fallback，回傳回覆文字並寫入 PendingQuestion。
+    text: 送入比對的原始問題；question: 儲存到 PendingQuestion 的字串（可帶前綴）。
+    """
+    use_dify = os.getenv("USE_DIFY", "false").lower() == "true"
+    reply_text = None
+
+    if use_dify:
+        from app.dify_client import chat as dify_chat
+        reply_text = dify_chat(user_id, text)
+        if not reply_text or "【轉人工客服】" in reply_text:
+            reply_text = None
+
+    if not reply_text:
+        result = find_best_match(text, db)
+        if result:
+            qa, _ = result
+            reply_text = qa.answer
+            qa.hit_count += 1
+            db.commit()
+
+    if not reply_text:
+        reply_text = "您的問題已收到，將由客服人員儘快為您回覆，感謝您的耐心等候！"
+        db.add(PendingQuestion(line_user_id=user_id, display_name=display_name, question=question))
+        db.commit()
+
+    return reply_text
+
+
 def handle_text_message(event, db: Session):
     user_id = event.source.user_id
     text = event.message.text
     quoted_line_id = getattr(event.message, "quoted_message_id", None)
 
     # ── OCR 確認狀態優先處理 ──────────────────────────────────────
+    if text == OCR_VIEW_TEXT:
+        pending_ocr = db.query(OcrPendingConfirm).filter(
+            OcrPendingConfirm.line_user_id == user_id,
+            OcrPendingConfirm.status == "waiting",
+            OcrPendingConfirm.expires_at > datetime.utcnow(),
+        ).order_by(OcrPendingConfirm.created_at.desc()).first()
+
+        messaging_api = get_messaging_api()
+        view_btn = QuickReply(items=[
+            QuickReplyItem(action=MessageAction(label="🔍 查看辨識結果", text=OCR_VIEW_TEXT)),
+        ])
+
+        if not pending_ocr:
+            messaging_api.reply_message(ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[TextMessage(
+                    text="⏳ 辨識尚未完成，請稍後再試。",
+                    quick_reply=view_btn,
+                )],
+            ))
+            return
+
+        # 大頭照：詢問被攝者姓名後再歸檔
+        if pending_ocr.doc_type == "大頭照":
+            pending_ocr.detected_name = "__ASK_NAME__"
+            db.commit()
+            messaging_api.reply_message(ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[TextMessage(
+                    text="🙂 收到您的大頭照！\n\n請問被攝者的姓名為何？（將用於存檔檔名）",
+                )],
+            ))
+            return
+
+        non_doc_messages = {
+            "生活照":    "📷 收到您的生活照片！\n\n如需客服協助，我們將儘快為您回覆。",
+            "非文件照片": "📷 收到您的照片，未能辨識為殯葬相關文件。\n\n若您要上傳文件，請確認圖片清晰且文字完整可見，或重新拍攝後上傳。",
+            "辨識失敗":  "⚠️ 文件辨識失敗，請重新上傳或聯繫客服。",
+        }
+        if pending_ocr.doc_type in non_doc_messages:
+            reply = non_doc_messages[pending_ocr.doc_type]
+            pending_ocr.status = "confirmed"
+            db.commit()
+            messaging_api.reply_message(ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[TextMessage(text=reply)],
+            ))
+            return
+
+        from app.ocr_client import format_confirm_message, _parse_structured
+        _, fields = _parse_structured(pending_ocr.ocr_result or "")
+        result_msg = format_confirm_message(pending_ocr.doc_type, fields or {}, pending_ocr.ocr_result or "")
+        messaging_api.reply_message(ReplyMessageRequest(
+            reply_token=event.reply_token,
+            messages=[TextMessage(
+                text=result_msg,
+                quick_reply=QuickReply(items=[
+                    QuickReplyItem(action=MessageAction(label="✅ 正確，請歸檔", text=OCR_CONFIRM_TEXT)),
+                    QuickReplyItem(action=MessageAction(label="❌ 辨識有誤", text=OCR_REJECT_TEXT)),
+                ]),
+            )],
+        ))
+        return
+
+    # ── 大頭照等待姓名輸入 ────────────────────────────────────────
+    id_photo_asking = db.query(OcrPendingConfirm).filter(
+        OcrPendingConfirm.line_user_id == user_id,
+        OcrPendingConfirm.doc_type == "大頭照",
+        OcrPendingConfirm.detected_name == "__ASK_NAME__",
+        OcrPendingConfirm.status == "waiting",
+        OcrPendingConfirm.expires_at > datetime.utcnow(),
+    ).order_by(OcrPendingConfirm.created_at.desc()).first()
+
+    if id_photo_asking:
+        name = text.strip()
+        id_photo_asking.detected_name = name
+        db.commit()
+        messaging_api = get_messaging_api()
+        messaging_api.reply_message(ReplyMessageRequest(
+            reply_token=event.reply_token,
+            messages=[TextMessage(
+                text=f"🙂 收到大頭照，被攝者姓名：{name}\n\n以上資訊是否正確，可以歸檔嗎？",
+                quick_reply=QuickReply(items=[
+                    QuickReplyItem(action=MessageAction(label="✅ 正確，請歸檔", text=OCR_CONFIRM_TEXT)),
+                    QuickReplyItem(action=MessageAction(label="❌ 辨識有誤", text=OCR_REJECT_TEXT)),
+                ]),
+            )],
+        ))
+        return
+    # ─────────────────────────────────────────────────────────────
+
     if text in (OCR_CONFIRM_TEXT, OCR_REJECT_TEXT):
         pending_ocr = db.query(OcrPendingConfirm).filter(
             OcrPendingConfirm.line_user_id == user_id,
@@ -82,6 +209,15 @@ def handle_text_message(event, db: Session):
         if pending_ocr:
             messaging_api = get_messaging_api()
             if text == OCR_CONFIRM_TEXT:
+                # 大頭照姓名尚未收集，導回詢問
+                if pending_ocr.doc_type == "大頭照" and pending_ocr.detected_name in (None, "__ASK_NAME__"):
+                    pending_ocr.detected_name = "__ASK_NAME__"
+                    db.commit()
+                    messaging_api.reply_message(ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text="請先告知被攝者的姓名，再進行歸檔。")],
+                    ))
+                    return
                 ocr_text = pending_ocr.ocr_result or ""
                 # 使用辨識當下已驗證修正的類型與姓名，確保與確認訊息一致
                 doc_type = pending_ocr.doc_type
@@ -107,15 +243,15 @@ def handle_text_message(event, db: Session):
                 ))
                 pending_ocr.status = "confirmed"
                 db.commit()
-                messaging_api.push_message(PushMessageRequest(
-                    to=user_id,
+                messaging_api.reply_message(ReplyMessageRequest(
+                    reply_token=event.reply_token,
                     messages=[TextMessage(text="✅ 文件已歸檔完成，感謝您的確認！")],
                 ))
             else:
                 pending_ocr.status = "rejected"
                 db.commit()
-                messaging_api.push_message(PushMessageRequest(
-                    to=user_id,
+                messaging_api.reply_message(ReplyMessageRequest(
+                    reply_token=event.reply_token,
                     messages=[TextMessage(text="了解，請重新上傳文件，或回覆問題由客服協助。")],
                 ))
             log_message(db, user_id, "incoming", "text", text)
@@ -151,46 +287,7 @@ def handle_text_message(event, db: Session):
             ))
             db.commit()
 
-    # ── 回覆邏輯：USE_DIFY=true 走 Dify AI，否則走現有 Q&A 比對 ──
-    use_dify = os.getenv("USE_DIFY", "false").lower() == "true"
-
-    if use_dify:
-        from app.dify_client import chat as dify_chat
-        reply_text = dify_chat(user_id, text)
-        if not reply_text or "【轉人工客服】" in reply_text:
-            # Dify 無法回答 → 先嘗試 MySQL rapidfuzz 關鍵字比對
-            result = find_best_match(text, db)
-            if result:
-                qa, score = result
-                reply_text = qa.answer
-                qa.hit_count += 1
-                db.commit()
-            else:
-                # 兩者都無法回答 → 轉人工客服
-                reply_text = "您的問題已收到，將由客服人員儘快為您回覆，感謝您的耐心等候！"
-                pending = PendingQuestion(
-                    line_user_id=user_id,
-                    display_name=user.display_name if user else None,
-                    question=text,
-                )
-                db.add(pending)
-                db.commit()
-    else:
-        result = find_best_match(text, db)
-        if result:
-            qa, score = result
-            reply_text = qa.answer
-            qa.hit_count += 1
-            db.commit()
-        else:
-            reply_text = "您的問題已收到，將由客服人員儘快為您回覆，感謝您的耐心等候！"
-            pending = PendingQuestion(
-                line_user_id=user_id,
-                display_name=user.display_name if user else None,
-                question=text,
-            )
-            db.add(pending)
-            db.commit()
+    reply_text = _resolve_qa_reply(text, text, user_id, user.display_name if user else None, db)
 
     resp = messaging_api.reply_message(
         ReplyMessageRequest(
@@ -217,10 +314,7 @@ def handle_image_message(event, db: Session):
     user_id = event.source.user_id
     message_id = event.message.id
 
-    configuration = Configuration(access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
-    with ApiClient(configuration) as api_client:
-        blob_api = MessagingApiBlob(api_client)
-        image_bytes = blob_api.get_message_content(message_id)
+    image_bytes = _download_content(message_id)
 
     filename = f"{uuid.uuid4().hex}.jpg"
     save_dir = os.path.join(os.path.dirname(__file__), "..", "static", "images")
@@ -237,10 +331,15 @@ def handle_image_message(event, db: Session):
     upsert_user(db, user_id, display_name, picture_url)
     msg_log = log_message(db, user_id, "incoming", "image", image_url)
 
-    # 立即回覆「辨識中」，背景執行 OCR
+    # 立即回覆「辨識中」並附按鈕（備援：若推播失敗用戶仍可手動查詢）
     messaging_api.reply_message(ReplyMessageRequest(
         reply_token=event.reply_token,
-        messages=[TextMessage(text="📄 收到您的文件，正在辨識中，請稍候...")],
+        messages=[TextMessage(
+            text="📄 收到您的文件，正在辨識中，請稍候約 30~60 秒，辨識完成後系統會通知您。",
+            quick_reply=QuickReply(items=[
+                QuickReplyItem(action=MessageAction(label="🔍 查看辨識結果", text=OCR_VIEW_TEXT)),
+            ]),
+        )],
     ))
     return abs_path, user_id, msg_log.id if msg_log else None
 
@@ -250,37 +349,40 @@ def handle_audio_message(event, db: Session):
     user_id = event.source.user_id
     message_id = event.message.id
 
-    configuration = Configuration(access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
-    with ApiClient(configuration) as api_client:
-        blob_api = MessagingApiBlob(api_client)
-        audio_bytes = blob_api.get_message_content(message_id)
+    audio_bytes = _download_content(message_id)
 
     messaging_api = get_messaging_api()
     display_name, picture_url = fetch_profile(messaging_api, user_id)
     upsert_user(db, user_id, display_name, picture_url)
 
-    # 立即回覆「語音辨識中」
-    messaging_api.reply_message(ReplyMessageRequest(
-        reply_token=event.reply_token,
-        messages=[TextMessage(text="🎙️ 收到您的語音，辨識中請稍候...")],
-    ))
-
-    return audio_bytes, user_id
+    return audio_bytes, user_id, event.reply_token
 
 
-def run_stt_and_reply(audio_bytes: bytes, user_id: str, db_factory):
-    """背景任務：STT 辨識 → 走文字回覆流程"""
+def run_stt_and_reply(audio_bytes: bytes, user_id: str, db_factory, reply_token: str = None):
+    """背景任務：STT 辨識 → 走文字回覆流程。優先用 reply_message（token 30 秒內有效），逾時 fallback push。"""
     from app.stt_client import transcribe
     db = db_factory()
+
+    def _send(text: str):
+        messaging_api = get_messaging_api()
+        if reply_token:
+            try:
+                messaging_api.reply_message(ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text=text)],
+                ))
+                return
+            except Exception:
+                pass
+        messaging_api.push_message(PushMessageRequest(
+            to=user_id, messages=[TextMessage(text=text)],
+        ))
+
     try:
         text = transcribe(audio_bytes)
-        messaging_api = get_messaging_api()
 
         if not text:
-            messaging_api.push_message(PushMessageRequest(
-                to=user_id,
-                messages=[TextMessage(text="⚠️ 語音辨識失敗，請重新說話或改用文字輸入。")],
-            ))
+            _send("⚠️ 語音辨識失敗，請重新說話或改用文字輸入。")
             return
 
         logger.info("STT 結果：%s", text[:60])
@@ -289,55 +391,16 @@ def run_stt_and_reply(audio_bytes: bytes, user_id: str, db_factory):
         log_message(db, user_id, "incoming", "audio", f"[語音] {text}")
 
         # 走和文字訊息相同的回覆邏輯
-        use_dify = os.getenv("USE_DIFY", "false").lower() == "true"
-        reply_text = None
+        user = db.query(LineUser).filter_by(line_user_id=user_id).first()
+        reply_text = _resolve_qa_reply(text, f"[語音] {text}", user_id, user.display_name if user else None, db)
 
-        if use_dify:
-            from app.dify_client import chat as dify_chat
-            reply_text = dify_chat(user_id, text)
-            if not reply_text or "【轉人工客服】" in reply_text:
-                from app.matcher import find_best_match
-                result = find_best_match(text, db)
-                if result:
-                    qa, score = result
-                    reply_text = qa.answer
-                    qa.hit_count += 1
-                    db.commit()
-                else:
-                    reply_text = None
-        else:
-            from app.matcher import find_best_match
-            result = find_best_match(text, db)
-            if result:
-                qa, score = result
-                reply_text = qa.answer
-                qa.hit_count += 1
-                db.commit()
-
-        if not reply_text:
-            reply_text = "您的問題已收到，將由客服人員儘快為您回覆，感謝您的耐心等候！"
-            from app.models import PendingQuestion
-            user = db.query(__import__('app.models', fromlist=['LineUser']).LineUser).filter_by(line_user_id=user_id).first()
-            db.add(PendingQuestion(
-                line_user_id=user_id,
-                display_name=user.display_name if user else None,
-                question=f"[語音] {text}",
-            ))
-            db.commit()
-
-        messaging_api.push_message(PushMessageRequest(
-            to=user_id,
-            messages=[TextMessage(text=reply_text)],
-        ))
+        _send(reply_text)
         log_message(db, user_id, "outgoing", "text", reply_text)
 
     except Exception as e:
         logger.error("STT 背景任務失敗（user=%s）：%s", user_id, e)
         try:
-            get_messaging_api().push_message(PushMessageRequest(
-                to=user_id,
-                messages=[TextMessage(text="⚠️ 語音處理失敗，請改用文字輸入。")],
-            ))
+            _send("⚠️ 語音處理失敗，請改用文字輸入。")
         except Exception:
             pass
     finally:
@@ -348,10 +411,7 @@ def handle_video_message(event, db: Session):
     user_id = event.source.user_id
     message_id = event.message.id
 
-    configuration = Configuration(access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
-    with ApiClient(configuration) as api_client:
-        blob_api = MessagingApiBlob(api_client)
-        video_bytes = blob_api.get_message_content(message_id)
+    video_bytes = _download_content(message_id)
 
     filename = f"{uuid.uuid4().hex}.mp4"
     save_dir = os.path.join(os.path.dirname(__file__), "..", "static", "images")
@@ -377,10 +437,7 @@ def handle_file_message(event, db: Session):
     safe_name = safe_name.lstrip('.') or "file"
     safe_name = safe_name[:200]
 
-    configuration = Configuration(access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
-    with ApiClient(configuration) as api_client:
-        blob_api = MessagingApiBlob(api_client)
-        file_bytes = blob_api.get_message_content(message_id)
+    file_bytes = _download_content(message_id)
 
     dir_id = uuid.uuid4().hex
     save_dir = os.path.join(os.path.dirname(__file__), "..", "static", "files", dir_id)
@@ -401,15 +458,15 @@ def handle_file_message(event, db: Session):
     if ext in (".pdf", ".jpg", ".jpeg", ".png", ".gif", ".webp"):
         messaging_api.reply_message(ReplyMessageRequest(
             reply_token=event.reply_token,
-            messages=[TextMessage(text="📄 收到您的文件，正在辨識中，請稍候...")],
+            messages=[TextMessage(
+                text="📄 收到您的文件，正在辨識中，請稍候約 30~60 秒，辨識完成後系統會通知您。",
+                quick_reply=QuickReply(items=[
+                    QuickReplyItem(action=MessageAction(label="🔍 查看辨識結果", text=OCR_VIEW_TEXT)),
+                ]),
+            )],
         ))
         return abs_path, user_id, msg_log.id if msg_log else None
     return None, user_id, None
-
-
-def _doc_type_from_ocr(ocr_text: str) -> str:
-    from app.ocr_client import _detect_doc_type
-    return _detect_doc_type(ocr_text)
 
 
 def _archive_file(file_path: str, ocr_text: str, doc_type: str = None, name: str = None) -> str:
@@ -457,119 +514,131 @@ def _archive_file(file_path: str, ocr_text: str, doc_type: str = None, name: str
 
 
 def run_ocr_and_notify(user_id: str, file_path: str, message_log_id: int | None):
-    """背景任務：圖片分類 → 文件走 OCR；生活照/大頭照直接通知。"""
+    """背景任務：OCR（含分類）→ 生活照/大頭照/文件分流通知。"""
     from app.ocr_client import (
         extract, format_confirm_message,
-        classify_image,
-        IMAGE_TYPE_DOCUMENT, IMAGE_TYPE_ID_PHOTO, IMAGE_TYPE_LIFE,
-        NON_DOCUMENT_RESULT,
+        NON_DOCUMENT_RESULT, LIFE_PHOTO_RESULT, ID_PHOTO_RESULT,
     )
     db = SessionLocal()
     try:
-        # ── 讀取圖片 ──────────────────────────────────────────────────
-        try:
-            with open(file_path, "rb") as f:
-                image_bytes = f.read()
-        except OSError as e:
-            logger.error("圖片讀取失敗：%s", e)
-            return
-
         messaging_api = get_messaging_api()
 
-        # ── 第一步：快速分類（輕量 prompt，~10秒）────────────────────
-        image_type = classify_image(image_bytes)
-        logger.info("圖片分類結果：%s", image_type)
+        view_btn = QuickReply(items=[
+            QuickReplyItem(action=MessageAction(label="🔍 查看辨識結果", text=OCR_VIEW_TEXT)),
+        ])
 
-        if image_type == IMAGE_TYPE_LIFE:
-            reply = "📷 收到您的生活照片！\n\n如需客服協助，我們將儘快為您回覆。"
-            messaging_api.push_message(PushMessageRequest(
-                to=user_id, messages=[TextMessage(text=reply)],
-            ))
-            user = db.query(__import__('app.models', fromlist=['LineUser']).LineUser)\
+        def _get_user():
+            return db.query(LineUser)\
                      .filter_by(line_user_id=user_id).first()
+
+        # ── 單次 OCR 呼叫，3 分鐘整體 timeout ────────────────────────
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+        OCR_TIMEOUT = 180
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(extract, file_path)
+            try:
+                ocr_result, doc_type, fields = future.result(timeout=OCR_TIMEOUT)
+            except FuturesTimeoutError:
+                logger.warning("OCR 超過 %ds 未完成，通知用戶重試（user=%s）", OCR_TIMEOUT, user_id)
+                try:
+                    messaging_api.push_message(PushMessageRequest(
+                        to=user_id,
+                        messages=[TextMessage(text="⚠️ 您傳的檔案無法順利辨識，請重新拍照上傳。")],
+                    ))
+                except Exception:
+                    pass
+                return
+
+        logger.info("OCR 結果（user=%s）：doc_type=%s ocr前50=%s", user_id, doc_type, ocr_result[:50])
+
+        # ── 生活照 ────────────────────────────────────────────────────
+        if ocr_result == LIFE_PHOTO_RESULT or ocr_result.startswith("【生活照】"):
+            user = _get_user()
             db.add(PendingQuestion(
                 line_user_id=user_id,
                 display_name=user.display_name if user else None,
                 question="[生活照] 用戶上傳了一張生活照片",
             ))
             db.commit()
+            try:
+                messaging_api.push_message(PushMessageRequest(
+                    to=user_id,
+                    messages=[TextMessage(text="📷 收到您的生活照片！\n\n如需客服協助，我們將儘快為您回覆。")],
+                ))
+            except Exception as push_err:
+                logger.warning("生活照推播失敗（user=%s）：%s", user_id, push_err)
             return
 
-        if image_type == IMAGE_TYPE_ID_PHOTO:
-            reply = "🙂 收到您的大頭照！\n\n如需客服協助，我們將儘快為您回覆。"
-            messaging_api.push_message(PushMessageRequest(
-                to=user_id, messages=[TextMessage(text=reply)],
-            ))
-            user = db.query(__import__('app.models', fromlist=['LineUser']).LineUser)\
-                     .filter_by(line_user_id=user_id).first()
+        # ── 大頭照 ────────────────────────────────────────────────────
+        if ocr_result == ID_PHOTO_RESULT or ocr_result.startswith("【大頭照】"):
+            user = _get_user()
             db.add(PendingQuestion(
                 line_user_id=user_id,
                 display_name=user.display_name if user else None,
                 question="[大頭照] 用戶上傳了一張大頭照",
             ))
+            db.add(OcrPendingConfirm(
+                line_user_id=user_id,
+                message_log_id=message_log_id,
+                file_path=file_path,
+                ocr_result="",
+                doc_type="大頭照",
+                detected_name=None,
+                status="waiting",
+                expires_at=datetime.utcnow() + timedelta(minutes=30),
+            ))
             db.commit()
+            try:
+                messaging_api.push_message(PushMessageRequest(
+                    to=user_id,
+                    messages=[TextMessage(
+                        text="🙂 收到您的大頭照！\n\n請點下方按鈕，填寫被攝者姓名後進行歸檔。",
+                        quick_reply=view_btn,
+                    )],
+                ))
+            except Exception as push_err:
+                logger.warning("大頭照推播失敗（user=%s）：%s", user_id, push_err)
             return
 
-        # ── 第二步：正式文件 → 完整 OCR ──────────────────────────────
-        ocr_result, doc_type, fields = extract(file_path)
-
-        # 模型明確判斷非文件
-        if ocr_result == NON_DOCUMENT_RESULT or ocr_result.startswith("【非文件圖片】"):
-            reply = "📷 收到您的照片！這張圖片不像是文件，如需客服協助，我們將儘快為您回覆。"
-            messaging_api.push_message(PushMessageRequest(
-                to=user_id,
-                messages=[TextMessage(text=reply)],
-            ))
-            user = db.query(__import__('app.models', fromlist=['LineUser']).LineUser)\
+        def _push_non_doc(question_tag: str, push_text: str):
+            user = db.query(LineUser)\
                      .filter_by(line_user_id=user_id).first()
             db.add(PendingQuestion(
                 line_user_id=user_id,
                 display_name=user.display_name if user else None,
-                question="[非文件照片] 模型判斷圖片非正式文件",
+                question=question_tag,
             ))
             db.commit()
+            try:
+                messaging_api.push_message(PushMessageRequest(
+                    to=user_id, messages=[TextMessage(text=push_text)],
+                ))
+            except Exception as push_err:
+                logger.warning("非文件推播失敗（user=%s）：%s", user_id, push_err)
+
+        # 模型明確判斷非文件
+        if ocr_result == NON_DOCUMENT_RESULT or ocr_result.startswith("【非文件圖片】"):
+            _push_non_doc(
+                "[非文件照片] 模型判斷圖片非正式文件",
+                "📷 收到您的照片！這張圖片不像是文件，如需客服協助，我們將儘快為您回覆。",
+            )
             return
 
         # OCR 未找到文字 → 分類可能誤判，當生活照處理
         if ocr_result.startswith("【未找到文字】"):
-            reply = (
-                "📷 收到您的照片，未在圖片中找到文件內容。\n\n"
-                "若您要上傳正式文件，請確認圖片清晰且文字可見，\n"
-                "或重新拍攝後上傳。\n\n"
-                "如需客服協助，我們將儘快為您回覆。"
+            _push_non_doc(
+                "[非文件照片] 用戶上傳了一張未含文字的照片",
+                "📷 收到您的照片，未在圖片中找到文件內容。\n\n若您要上傳正式文件，請確認圖片清晰且文字可見，或重新拍攝後上傳。",
             )
-            messaging_api.push_message(PushMessageRequest(
-                to=user_id,
-                messages=[TextMessage(text=reply)],
-            ))
-            user = db.query(__import__('app.models', fromlist=['LineUser']).LineUser)\
-                     .filter_by(line_user_id=user_id).first()
-            db.add(PendingQuestion(
-                line_user_id=user_id,
-                display_name=user.display_name if user else None,
-                question="[非文件照片] 用戶上傳了一張未含文字的照片",
-            ))
-            db.commit()
             return
 
         # 文件類型未知且無任何有效欄位 → 很可能是非文件照片
         if doc_type in ("未分類", "其他") and not any(fields.values()):
-            reply = (
-                "📷 收到您的照片，未能辨識為殯葬相關文件。\n\n"
-                "若您要上傳文件，請確認圖片清晰且文字完整可見，\n"
-                "或重新拍攝後上傳。如需客服協助，我們將儘快為您回覆。"
+            _push_non_doc(
+                "[非文件照片] 用戶上傳無法辨識的圖片",
+                "📷 收到您的照片，未能辨識為殯葬相關文件。\n\n若您要上傳文件，請確認圖片清晰且文字完整可見，或重新拍攝後上傳。",
             )
-            messaging_api.push_message(PushMessageRequest(
-                to=user_id, messages=[TextMessage(text=reply)],
-            ))
-            user = db.query(__import__('app.models', fromlist=['LineUser']).LineUser)\
-                     .filter_by(line_user_id=user_id).first()
-            db.add(PendingQuestion(
-                line_user_id=user_id,
-                display_name=user.display_name if user else None,
-                question="[非文件照片] 用戶上傳無法辨識的圖片",
-            ))
-            db.commit()
             return
 
         # 存下「已驗證修正」的類型與姓名，歸檔時直接使用，不再重新解析
@@ -589,17 +658,17 @@ def run_ocr_and_notify(user_id: str, file_path: str, message_log_id: int | None)
         db.add(ocr_record)
         db.commit()
 
-        result_msg = format_confirm_message(doc_type, fields, ocr_result)
-        messaging_api.push_message(PushMessageRequest(
-            to=user_id,
-            messages=[TextMessage(
-                text=result_msg,
-                quick_reply=QuickReply(items=[
-                    QuickReplyItem(action=MessageAction(label="✅ 正確，請歸檔", text=OCR_CONFIRM_TEXT)),
-                    QuickReplyItem(action=MessageAction(label="❌ 辨識有誤", text=OCR_REJECT_TEXT)),
-                ]),
-            )],
-        ))
+        try:
+            messaging_api.push_message(PushMessageRequest(
+                to=user_id,
+                messages=[TextMessage(
+                    text="✅ 文件辨識完成！請點下方按鈕查看辨識結果。",
+                    quick_reply=view_btn,
+                )],
+            ))
+            logger.info("OCR 完成通知已推播（user=%s doc_type=%s）", user_id, doc_type)
+        except Exception as push_err:
+            logger.warning("OCR 完成推播失敗（user=%s）：%s，用戶可點初始回覆按鈕查看結果", user_id, push_err)
     except Exception as e:
         logger.error("OCR 背景任務失敗（user=%s）：%s", user_id, e)
         try:
