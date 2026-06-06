@@ -1,7 +1,7 @@
 # 開發規劃文件：OCR 歸檔工作流 + 架構升級
 
 > 建立日期：2026-05-24  
-> 最後更新：2026-05-31  
+> 最後更新：2026-06-06  
 > 分支：feature/dify-integration  
 
 ---
@@ -25,16 +25,17 @@ LINE Platform（雲端）
 Cloudflare Tunnel
         │
         ▼
-ASUS Ascent GX10（ARM64，128GB RAM）        NAS 主機（待掛載）
-├── LINE Bot FastAPI                    ├── /archive/死亡證明書/{YYYY}/{MM}/
-├── MySQL                               ├── /archive/火化許可證/{YYYY}/{MM}/
-├── Nginx + cloudflared                 ├── /archive/遷出證明書/{YYYY}/{MM}/
-├── Dify + 知識庫（已遷移 ✅）             ├── /archive/起掘許可證/{YYYY}/{MM}/
-├── Ollama + Qwen2.5VL（待安裝）        ├── /archive/國民身分證/{YYYY}/{MM}/
-└── /opt/linebot/archived ──NFS 掛載───►└── /archive/未分類/{YYYY}/{MM}/
+ASUS Ascent GX10（ARM64，128GB RAM）        NAS（192.168.31.35，SMB 掛載）
+├── LINE Bot FastAPI                    ├── /scan/LINEBOT/死亡證明書/{YYYY}/{MM}/
+├── MySQL                               ├── /scan/LINEBOT/火化許可證/{YYYY}/{MM}/
+├── Nginx + cloudflared                 ├── /scan/LINEBOT/遷出證明書/{YYYY}/{MM}/
+├── Dify + 知識庫 ✅                    ├── /scan/LINEBOT/亡者大頭照/{YYYY}/{MM}/
+├── Ollama qwen2.5vl:7b ✅              ├── /scan/LINEBOT/待人工確認/{YYYY}/{MM}/
+├── Weaviate + bge-m3 ✅                └── ...
+└── /mnt/nas_linebot（ARCHIVE_PATH）────►（手動掛載，fstab 尚未設定）
 
 VMware VM（192.168.31.89）
-└── cloudflared 已停止，linebot 服務仍在（備援保留中）
+└── 觀察中，建議 2026-06-14 退役
 ```
 
 ### ASUS Ascent GX10 規格
@@ -243,56 +244,53 @@ EasyOCR 正常執行但無文字（如風景照）→ 回覆「未找到文字�
 | **已完成** | 無法辨識照片 → 詢問用戶「重新拍照 or 仍要歸檔」| ✅ |
 | **已完成** | 「仍要歸檔」存入「待人工確認」資料夾並寫入 ArchivedDocument | ✅ |
 | **已完成** | 新照片上傳時作廢舊 waiting 記錄，防止多張上傳歸錯檔 | ✅ |
-| **下一步** | 掛載 NAS，更新 ARCHIVE_PATH | ⏳ 待辦 |
+| **下一步** | NAS fstab 永久掛載（目前手動掛載，重開機會掉）| ⏳ 待辦 |
+| **下一步** | 後台「已歸檔文件」管理頁面（含待人工確認篩選）| ⏳ 待辦 |
+| **下一步** | LINE push 配額問題（免費 200 則/月已耗盡）| ⏳ 待辦 |
 | **下一步** | VM 退役（建議觀察至 2026-06-14）| ⏳ 待辦 |
 
 ---
 
 ## 十、下一步詳細說明
 
-### 10-1. 安裝 Ollama + Qwen2.5VL（GX10 上）
+### 10-1. NAS fstab 永久掛載 ⏳
+
+目前 SMB 為手動掛載，GX10 重開機後會消失。
 
 ```bash
-# 在 GX10（192.168.31.103）上執行
-curl -fsSL https://ollama.com/install.sh | sh
-ollama pull qwen2.5vl:7b   # ~5GB，首次下載需時
+# 建立認證檔
+sudo bash -c 'echo "username=life
+password=<NAS密碼>" > /etc/samba/nas_linebot.creds'
+sudo chmod 600 /etc/samba/nas_linebot.creds
 
-# 設定 .env
-OLLAMA_API_URL=http://localhost:11434
-OLLAMA_MODEL=qwen2.5vl:7b
-
-# 重啟服務
-sudo systemctl restart linebot
-```
-
-安裝完成後 OCR 精準度從 EasyOCR 的 ~60% 提升至 Qwen2.5VL 的 95%+。
-
-### 10-2. 掛載 NAS
-
-```bash
-# 安裝 NFS client
-sudo apt install -y nfs-common
-
-# 掛載（替換 NAS_IP）
-echo "<NAS_IP>:/volume1/archive /opt/linebot/archived nfs defaults,_netdev 0 0" \
+# 加入 fstab
+echo "//192.168.31.35/scan/LINEBOT /mnt/nas_linebot cifs \
+credentials=/etc/samba/nas_linebot.creds,uid=1000,gid=1000,\
+file_mode=0755,dir_mode=0755,iocharset=utf8,vers=3.0,_netdev 0 0" \
   | sudo tee -a /etc/fstab
-sudo mount -a
 
-# 更新 .env
-ARCHIVE_PATH=/opt/linebot/archived
+sudo mount -a   # 驗證
 ```
 
-### 10-3. Dify 遷移至 GX10
+### 10-2. 後台「已歸檔文件」管理頁面 ⏳
 
-需從舊 VM 匯出 Docker volumes（~366MB），在 GX10 還原後重啟 Dify：
+目前 admin 後台沒有查看 `archived_documents` 的頁面，尤其「待人工確認」需要人工處理：
+- 列表顯示：上傳者、文件類型、歸檔路徑、確認時間
+- 可篩選「待人工確認」，點擊下載/預覽
+- 確認後可手動修改 document_type 並移至正確資料夾
 
-| Volume | 大小 | 說明 |
-|--------|------|------|
-| dify_dify_pg_data | 86.5MB | PostgreSQL（知識庫、App 設定）|
-| dify_dify_plugin_storage | 266MB | Plugin 二進位 |
-| dify_dify_api_storage | 12.5MB | 上傳文件 |
-| dify_dify_weaviate_data | 1.1MB | 向量資料 |
+### 10-3. LINE push 配額問題 ⏳
+
+目前免費方案每月 200 則推播，已於測試階段耗盡（429 錯誤）。
+選項：
+- 升級 LINE Business 方案（月費方案，300 則起）
+- 改用 reply_message 為主（已大幅減少 push 用量）
+- 考慮是否仍需推播通知，或純依靠「查看辨識結果」按鈕
+
+### 10-4. VM 退役 ⏳
+
+觀察至 2026-06-14，確認 GX10 穩定後關閉 VM（192.168.31.89）。
 
 ---
 
-*文件最後更新：2026-06-05（OCR 卡死循環修復 + 無法辨識照片歸檔選擇流程 + 多張上傳歸錯檔修復）*
+*文件最後更新：2026-06-06（修正過時架構描述 + 整理下一步待辦）*
