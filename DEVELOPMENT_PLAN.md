@@ -64,7 +64,7 @@ VMware VM（192.168.31.89）
 Webhook handler（/webhook）
         │
         ├─ 儲存檔案到本地（< 1 秒）
-        ├─ reply_message：「收到您的文件，辨識中請稍候...」  ← 立即回應
+        ├─ reply_message：「📎 已收到您提供的檔案，感謝您。」＋[🔍 查看辨識結果]  ← 立即回應
         ├─ BackgroundTask：run_ocr_and_notify(user_id, file_path)
         └─ return 200
 
@@ -73,20 +73,20 @@ Webhook handler（/webhook）
         ├─ 圖片/PDF → OCR（Ollama → EasyOCR → Mock 降級鏈）
         ├─ PDF：先檢測嵌入文字品質（短行比例 > 40% 改走圖片 OCR）
         ├─ 語意解析：_parse_structured（Ollama 輸出）或 _extract_fields_regex（EasyOCR）
-        ├─ 建立 ocr_pending_confirms 記錄（status='waiting'，30 分鐘逾時）
-        └─ push_message：「收到您提供的 XXX 的 OOO 文件」+ Quick Reply
-                   [✅ 正確，請歸檔] [❌ 辨識有誤，重新上傳]
-
-用戶點「✅ 正確，請歸檔」
         │
-        ├─ 移動檔案至 /archived/{document_type}/{YYYY}/{MM}/
-        ├─ 寫入 archived_documents DB
-        ├─ 更新 ocr_pending_confirms.status = 'confirmed'
-        └─ push_message：「✅ 文件已歸檔完成」
+        ├─ [生活照] 寫入 PendingQuestion，不通知用戶
+        ├─ [大頭照] 寫入 OcrPendingConfirm（48 小時有效），push 詢問亡者姓名
+        │           用戶直接回覆 2~5 個中文字 → 立即歸檔，回覆「✅ 大頭照已歸檔」
+        ├─ [非文件/無法辨識] 寫入 OcrPendingConfirm（doc_type=非文件照片/辨識失敗）
+        │           用戶點「查看辨識結果」→ 詢問「重新拍照 or 仍要歸檔」
+        │           → 仍要歸檔：存入「待人工確認」資料夾
+        └─ [正常文件] 寫入 OcrPendingConfirm（status=waiting，30 分鐘有效）
+                    用戶點「查看辨識結果」→ 顯示辨識結果＋確認/拒絕按鈕
+                    → 確認：歸檔至對應資料夾，寫入 archived_documents
 
-用戶點「❌ 辨識有誤，重新上傳」
-        └─ 更新 status = 'rejected'
-           push_message：「請重新上傳文件」
+用戶上傳非 OCR 格式（docx、csv、xlsx…）
+        └─ 直接歸檔至「其他檔案區/{YYYY}/{MM}/」（日期前綴重新命名）
+           reply_message：「📎 已收到您提供的檔案，感謝您。」
 ```
 
 ### 3-2. OCR 引擎降級鏈
@@ -244,9 +244,13 @@ EasyOCR 正常執行但無文字（如風景照）→ 回覆「未找到文字�
 | **已完成** | 無法辨識照片 → 詢問用戶「重新拍照 or 仍要歸檔」| ✅ |
 | **已完成** | 「仍要歸檔」存入「待人工確認」資料夾並寫入 ArchivedDocument | ✅ |
 | **已完成** | 新照片上傳時作廢舊 waiting 記錄，防止多張上傳歸錯檔 | ✅ |
+| **已完成** | 非 OCR 格式檔案（docx/csv/xlsx 等）自動歸檔至「其他檔案區」 | ✅ |
+| **已完成** | 移除所有 OCR 推播通知（生活照/非文件/完成/逾時），改被動 reply_message | ✅ |
+| **已完成** | 大頭照流程：push 詢問姓名 → 用戶直接回覆 2~5 中文字 → 立即歸檔（去除二次確認） | ✅ |
+| **已完成** | 大頭照 OcrPendingConfirm 有效期延長至 48 小時（避免 OCR 排隊時記錄提前過期） | ✅ |
 | **下一步** | NAS fstab 永久掛載（目前手動掛載，重開機會掉）| ⏳ 待辦 |
 | **下一步** | 後台「已歸檔文件」管理頁面（含待人工確認篩選）| ⏳ 待辦 |
-| **下一步** | LINE push 配額問題（免費 200 則/月已耗盡）| ⏳ 待辦 |
+| **下一步** | LINE push 配額問題（免費 200 則/月，大頭照詢問仍使用 push）| ⏳ 待辦 |
 | **下一步** | VM 退役（建議觀察至 2026-06-14）| ⏳ 待辦 |
 
 ---
@@ -281,11 +285,11 @@ sudo mount -a   # 驗證
 
 ### 10-3. LINE push 配額問題 ⏳
 
-目前免費方案每月 200 則推播，已於測試階段耗盡（429 錯誤）。
+目前免費方案每月 200 則推播，已大幅削減 push 用量（移除生活照/非文件/OCR完成/逾時等 6 種 push）。
+現存唯一 push：大頭照辨識完成後詢問亡者姓名（1 則/張）。
 選項：
 - 升級 LINE Business 方案（月費方案，300 則起）
-- 改用 reply_message 為主（已大幅減少 push 用量）
-- 考慮是否仍需推播通知，或純依靠「查看辨識結果」按鈕
+- 若配額仍不足，可改為用戶主動點「查看辨識結果」後再提示輸入姓名
 
 ### 10-4. VM 退役 ⏳
 
@@ -293,4 +297,4 @@ sudo mount -a   # 驗證
 
 ---
 
-*文件最後更新：2026-06-06（修正過時架構描述 + 整理下一步待辦）*
+*文件最後更新：2026-06-06（非 OCR 格式歸檔 + 移除 OCR push + 大頭照流程優化）*
