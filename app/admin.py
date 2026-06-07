@@ -604,9 +604,17 @@ def _report_rows(db: Session, sel_date):
     rows = []
     for d in docs:
         cst_time = (d.confirmed_at + timedelta(hours=8)).strftime("%H:%M")
-        user = "待人工確認" if d.document_type == "待人工確認" else (d.display_name or "未知")
-        result = os.path.basename(d.archived_file_path or d.original_file_path or "-")
-        rows.append({"time": cst_time, "user": user, "doc_type": d.document_type, "result": result})
+        fname = os.path.basename(d.archived_file_path or d.original_file_path or "")
+        stem = os.path.splitext(fname)[0]
+        name_in_file = stem.split("-")[0] if "-" in stem else stem
+        doc_user = "待人工確認" if d.document_type == "待人工確認" else name_in_file
+        rows.append({
+            "time": cst_time,
+            "sender": d.display_name or "未知",
+            "doc_type": d.document_type,
+            "doc_user": doc_user,
+            "filename": fname,
+        })
     return rows
 
 
@@ -637,9 +645,9 @@ def report_export(date: str = None, db: Session = Depends(get_db), _=Depends(che
     rows = _report_rows(db, sel_date)
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["日期", "時間", "使用者", "檔案類別", "辨識結果"])
+    writer.writerow(["日期", "時間", "傳送者", "檔案類型", "使用者", "檔案名稱"])
     for r in rows:
-        writer.writerow([sel_date.isoformat(), r["time"], r["user"], r["doc_type"], r["result"]])
+        writer.writerow([sel_date.isoformat(), r["time"], r["sender"], r["doc_type"], r["doc_user"], r["filename"]])
     buf.seek(0)
     filename = f"report_{sel_date.isoformat()}.csv"
     return StreamingResponse(

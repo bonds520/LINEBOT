@@ -67,23 +67,18 @@
     <table class="table table-hover mb-0">
       <thead class="table-light">
         <tr>
-          <th style="width:80px">時間</th>
+          <th style="width:70px">時間</th>
+          <th>傳送者</th>
+          <th style="width:130px">檔案類型</th>
           <th>使用者</th>
-          <th style="width:140px">檔案類別</th>
-          <th>辨識結果</th>
+          <th>檔案名稱</th>
         </tr>
       </thead>
       <tbody>
         {% for r in rows %}
         <tr>
           <td class="text-muted small">{{ r.time }}</td>
-          <td>
-            {% if r.user == '待人工確認' %}
-            <span class="badge bg-danger">待人工確認</span>
-            {% else %}
-            {{ r.user }}
-            {% endif %}
-          </td>
+          <td>{{ r.sender }}</td>
           <td>
             <span class="badge
               {% if r.doc_type == '待人工確認' %}bg-danger
@@ -93,7 +88,14 @@
               {{ r.doc_type }}
             </span>
           </td>
-          <td class="small text-muted font-monospace">{{ r.result }}</td>
+          <td>
+            {% if r.doc_user == '待人工確認' %}
+            <span class="text-danger fw-bold">待人工確認</span>
+            {% else %}
+            {{ r.doc_user }}
+            {% endif %}
+          </td>
+          <td class="small text-muted font-monospace">{{ r.filename }}</td>
         </tr>
         {% endfor %}
       </tbody>
