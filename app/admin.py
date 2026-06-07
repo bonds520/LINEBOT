@@ -17,7 +17,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.database import get_db
-from app.models import QAPair, PendingQuestion, MessageLog, LineUser, SystemUser, SystemSession
+from app.models import QAPair, PendingQuestion, MessageLog, LineUser, SystemUser, SystemSession, ArchivedDocument
 from app.auth import hash_password
 
 router = APIRouter(prefix="/admin")
@@ -588,4 +588,62 @@ def qa_export(fmt: str = "csv", db: Session = Depends(get_db), _=Depends(check_a
         iter([buf.getvalue().encode("utf-8-sig")]),
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename=qa_export_{timestamp}.csv"},
+    )
+
+
+# ── 每日附件報表 ──────────────────────────────────────────────────────────
+
+def _report_rows(db: Session, sel_date):
+    """查詢指定 CST 日期的歸檔記錄，回傳報表列清單。"""
+    utc_start = datetime(sel_date.year, sel_date.month, sel_date.day) - timedelta(hours=8)
+    utc_end = utc_start + timedelta(days=1)
+    docs = db.query(ArchivedDocument).filter(
+        ArchivedDocument.confirmed_at >= utc_start,
+        ArchivedDocument.confirmed_at < utc_end,
+    ).order_by(ArchivedDocument.confirmed_at.asc()).all()
+    rows = []
+    for d in docs:
+        cst_time = (d.confirmed_at + timedelta(hours=8)).strftime("%H:%M")
+        user = "待人工確認" if d.document_type == "待人工確認" else (d.display_name or "未知")
+        result = os.path.basename(d.archived_file_path or d.original_file_path or "-")
+        rows.append({"time": cst_time, "user": user, "doc_type": d.document_type, "result": result})
+    return rows
+
+
+@router.get("/report", response_class=HTMLResponse)
+def report_page(request: Request, date: str = None, db: Session = Depends(get_db), _=Depends(check_auth)):
+    from datetime import date as date_type
+    today_cst = (datetime.utcnow() + timedelta(hours=8)).date()
+    try:
+        sel_date = date_type.fromisoformat(date) if date else today_cst
+    except ValueError:
+        sel_date = today_cst
+    rows = _report_rows(db, sel_date)
+    return templates.TemplateResponse(request=request, name="report.html", context={
+        "rows": rows,
+        "sel_date": sel_date.isoformat(),
+        "today": today_cst.isoformat(),
+    })
+
+
+@router.get("/report/export")
+def report_export(date: str = None, db: Session = Depends(get_db), _=Depends(check_auth)):
+    from datetime import date as date_type
+    today_cst = (datetime.utcnow() + timedelta(hours=8)).date()
+    try:
+        sel_date = date_type.fromisoformat(date) if date else today_cst
+    except ValueError:
+        sel_date = today_cst
+    rows = _report_rows(db, sel_date)
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["日期", "時間", "使用者", "檔案類別", "辨識結果"])
+    for r in rows:
+        writer.writerow([sel_date.isoformat(), r["time"], r["user"], r["doc_type"], r["result"]])
+    buf.seek(0)
+    filename = f"report_{sel_date.isoformat()}.csv"
+    return StreamingResponse(
+        iter([buf.getvalue().encode("utf-8-sig")]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
