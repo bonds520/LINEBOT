@@ -3,7 +3,7 @@ from linebot.v3.messaging import (
     ReplyMessageRequest, PushMessageRequest,
     TextMessage, ImageMessage, VideoMessage,
     FlexMessage, FlexBubble, FlexBox, FlexText, FlexButton, FlexImage,
-    URIAction, QuickReply, QuickReplyItem, MessageAction,
+    URIAction,
 )
 from sqlalchemy.orm import Session
 from app.models import LineUser, MessageLog, QAPair, PendingQuestion, MessageQuote, OcrPendingConfirm, ArchivedDocument
@@ -15,14 +15,9 @@ import uuid
 import shutil
 import logging
 from datetime import datetime, timedelta
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
-
-OCR_CONFIRM_TEXT        = "✅ 正確，請歸檔"
-OCR_REJECT_TEXT         = "❌ 辨識有誤，重新上傳"
-OCR_VIEW_TEXT           = "🔍 查看辨識結果"
-OCR_RETRY_TEXT          = "📷 重新拍照上傳"
-OCR_MANUAL_ARCHIVE_TEXT = "📁 仍要歸檔"
 
 
 def get_messaging_api() -> MessagingApi:
@@ -109,75 +104,6 @@ def handle_text_message(event, db: Session):
     text = event.message.text
     quoted_line_id = getattr(event.message, "quoted_message_id", None)
 
-    # ── OCR 確認狀態優先處理 ──────────────────────────────────────
-    if text == OCR_VIEW_TEXT:
-        pending_ocr = db.query(OcrPendingConfirm).filter(
-            OcrPendingConfirm.line_user_id == user_id,
-            OcrPendingConfirm.status == "waiting",
-            OcrPendingConfirm.expires_at > datetime.utcnow(),
-        ).order_by(OcrPendingConfirm.created_at.desc()).first()
-
-        messaging_api = get_messaging_api()
-        view_btn = QuickReply(items=[
-            QuickReplyItem(action=MessageAction(label="🔍 查看辨識結果", text=OCR_VIEW_TEXT)),
-        ])
-
-        if not pending_ocr:
-            messaging_api.reply_message(ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[TextMessage(
-                    text="⏳ 辨識尚未完成，或已逾時，請重新上傳文件。",
-                )],
-            ))
-            return
-
-        # 大頭照：提示直接回覆姓名（push 已詢問，此為備援）
-        if pending_ocr.doc_type == "大頭照":
-            messaging_api.reply_message(ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[TextMessage(
-                    text="🙂 收到您的大頭照！\n\n請直接回覆亡者姓名，即可完成歸檔。",
-                )],
-            ))
-            return
-
-        if pending_ocr.doc_type == "生活照":
-            pending_ocr.status = "confirmed"
-            db.commit()
-            messaging_api.reply_message(ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[TextMessage(text="📷 收到您的生活照片！\n\n如需客服協助，我們將儘快為您回覆。")],
-            ))
-            return
-
-        if pending_ocr.doc_type in ("辨識失敗", "非文件照片"):
-            messaging_api.reply_message(ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[TextMessage(
-                    text="⚠️ 無法辨識您的照片，請問您要重新拍照上傳，或是仍要歸檔保存？",
-                    quick_reply=QuickReply(items=[
-                        QuickReplyItem(action=MessageAction(label="📷 重新拍照上傳", text=OCR_RETRY_TEXT)),
-                        QuickReplyItem(action=MessageAction(label="📁 仍要歸檔", text=OCR_MANUAL_ARCHIVE_TEXT)),
-                    ]),
-                )],
-            ))
-            return
-
-        from app.ocr_client import format_confirm_message, _parse_structured
-        _, fields = _parse_structured(pending_ocr.ocr_result or "")
-        result_msg = format_confirm_message(pending_ocr.doc_type, fields or {}, pending_ocr.ocr_result or "")
-        messaging_api.reply_message(ReplyMessageRequest(
-            reply_token=event.reply_token,
-            messages=[TextMessage(
-                text=result_msg,
-                quick_reply=QuickReply(items=[
-                    QuickReplyItem(action=MessageAction(label="✅ 正確，請歸檔", text=OCR_CONFIRM_TEXT)),
-                    QuickReplyItem(action=MessageAction(label="❌ 辨識有誤", text=OCR_REJECT_TEXT)),
-                ]),
-            )],
-        ))
-        return
-
     # ── 大頭照姓名輸入：2～5 個中文字 → 直接歸檔 ─────────────────
     if re.fullmatch(r'[一-鿿]{2,5}', text.strip()):
         id_photo_pending = db.query(OcrPendingConfirm).filter(
@@ -210,102 +136,6 @@ def handle_text_message(event, db: Session):
                 messages=[TextMessage(text=f"✅ 大頭照已以「{name}」為檔名完成歸檔，感謝您！")],
             ))
             return
-    # ─────────────────────────────────────────────────────────────
-
-    if text in (OCR_CONFIRM_TEXT, OCR_REJECT_TEXT):
-        pending_ocr = db.query(OcrPendingConfirm).filter(
-            OcrPendingConfirm.line_user_id == user_id,
-            OcrPendingConfirm.status == "waiting",
-            OcrPendingConfirm.expires_at > datetime.utcnow(),
-        ).order_by(OcrPendingConfirm.created_at.desc()).first()
-
-        if pending_ocr:
-            messaging_api = get_messaging_api()
-            if text == OCR_CONFIRM_TEXT:
-                ocr_text = pending_ocr.ocr_result or ""
-                # 使用辨識當下已驗證修正的類型與姓名，確保與確認訊息一致
-                doc_type = pending_ocr.doc_type
-                detected_name = pending_ocr.detected_name
-                if not doc_type:
-                    from app.ocr_client import _parse_structured, _detect_doc_type
-                    doc_type, _f = _parse_structured(ocr_text)
-                    if not doc_type:
-                        doc_type = _detect_doc_type(ocr_text)
-                archived_path = _archive_file(
-                    pending_ocr.file_path, ocr_text,
-                    doc_type=doc_type, name=detected_name,
-                )
-                display_name, _ = fetch_profile(messaging_api, user_id)
-                db.add(ArchivedDocument(
-                    line_user_id=user_id,
-                    display_name=display_name,
-                    original_file_path=pending_ocr.file_path,
-                    archived_file_path=archived_path,
-                    ocr_result=ocr_text,
-                    document_type=doc_type,
-                    confirmed_at=datetime.utcnow(),
-                ))
-                pending_ocr.status = "confirmed"
-                db.commit()
-                messaging_api.reply_message(ReplyMessageRequest(
-                    reply_token=event.reply_token,
-                    messages=[TextMessage(text="✅ 文件已歸檔完成，感謝您的確認！")],
-                ))
-            else:
-                pending_ocr.status = "rejected"
-                db.commit()
-                messaging_api.reply_message(ReplyMessageRequest(
-                    reply_token=event.reply_token,
-                    messages=[TextMessage(text="了解，請重新上傳文件，或回覆問題由客服協助。")],
-                ))
-            log_message(db, user_id, "incoming", "text", text)
-            return
-
-    if text in (OCR_RETRY_TEXT, OCR_MANUAL_ARCHIVE_TEXT):
-        pending_ocr = db.query(OcrPendingConfirm).filter(
-            OcrPendingConfirm.line_user_id == user_id,
-            OcrPendingConfirm.doc_type.in_(["辨識失敗", "非文件照片"]),
-            OcrPendingConfirm.status == "waiting",
-            OcrPendingConfirm.expires_at > datetime.utcnow(),
-        ).order_by(OcrPendingConfirm.created_at.desc()).first()
-
-        messaging_api = get_messaging_api()
-        if pending_ocr:
-            if text == OCR_RETRY_TEXT:
-                pending_ocr.status = "rejected"
-                db.commit()
-                messaging_api.reply_message(ReplyMessageRequest(
-                    reply_token=event.reply_token,
-                    messages=[TextMessage(text="請重新拍照後上傳文件。")],
-                ))
-            else:
-                archived_path = _archive_file(
-                    pending_ocr.file_path, "",
-                    doc_type="待人工確認", name=None,
-                )
-                display_name, _ = fetch_profile(messaging_api, user_id)
-                db.add(ArchivedDocument(
-                    line_user_id=user_id,
-                    display_name=display_name,
-                    original_file_path=pending_ocr.file_path,
-                    archived_file_path=archived_path,
-                    ocr_result="",
-                    document_type="待人工確認",
-                    confirmed_at=datetime.utcnow(),
-                ))
-                pending_ocr.status = "confirmed"
-                db.commit()
-                messaging_api.reply_message(ReplyMessageRequest(
-                    reply_token=event.reply_token,
-                    messages=[TextMessage(text="✅ 照片已存入「待人工確認」資料夾，我們將安排人工確認。")],
-                ))
-        else:
-            messaging_api.reply_message(ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[TextMessage(text="目前沒有待處理的照片，請重新上傳。")],
-            ))
-        log_message(db, user_id, "incoming", "text", text)
-        return
     # ─────────────────────────────────────────────────────────────
 
     messaging_api = get_messaging_api()
@@ -381,22 +211,9 @@ def handle_image_message(event, db: Session):
     upsert_user(db, user_id, display_name, picture_url)
     msg_log = log_message(db, user_id, "incoming", "image", image_url)
 
-    # 新照片上傳，作廢舊的待確認記錄（避免按「查看結果」時取到前一張照片的記錄）
-    db.query(OcrPendingConfirm).filter(
-        OcrPendingConfirm.line_user_id == user_id,
-        OcrPendingConfirm.status == "waiting",
-    ).update({"expires_at": datetime.utcnow()})
-    db.commit()
-
-    # 立即回覆「辨識中」並附按鈕（備援：若推播失敗用戶仍可手動查詢）
     messaging_api.reply_message(ReplyMessageRequest(
         reply_token=event.reply_token,
-        messages=[TextMessage(
-            text="📎 已收到您提供的檔案，感謝您。",
-            quick_reply=QuickReply(items=[
-                QuickReplyItem(action=MessageAction(label="🔍 查看辨識結果", text=OCR_VIEW_TEXT)),
-            ]),
-        )],
+        messages=[TextMessage(text="📎 已收到您提供的檔案，感謝您。")],
     ))
     return abs_path, user_id, msg_log.id if msg_log else None
 
@@ -512,21 +329,11 @@ def handle_file_message(event, db: Session):
 
     ext = os.path.splitext(safe_name)[1].lower()
 
-    # PDF 或圖片：作廢舊待確認記錄，觸發 OCR
+    # PDF 或圖片：觸發 OCR，後台自動歸檔
     if ext in (".pdf", ".jpg", ".jpeg", ".png", ".gif", ".webp"):
-        db.query(OcrPendingConfirm).filter(
-            OcrPendingConfirm.line_user_id == user_id,
-            OcrPendingConfirm.status == "waiting",
-        ).update({"expires_at": datetime.utcnow()})
-        db.commit()
         messaging_api.reply_message(ReplyMessageRequest(
             reply_token=event.reply_token,
-            messages=[TextMessage(
-                text="📎 已收到您提供的檔案，感謝您。",
-                quick_reply=QuickReply(items=[
-                    QuickReplyItem(action=MessageAction(label="🔍 查看辨識結果", text=OCR_VIEW_TEXT)),
-                ]),
-            )],
+            messages=[TextMessage(text="📎 已收到您提供的檔案，感謝您。")],
         ))
         return abs_path, user_id, msg_log.id if msg_log else None
 
@@ -599,7 +406,7 @@ def _archive_file(file_path: str, ocr_text: str, doc_type: str = None, name: str
 
 
 def run_ocr_and_notify(user_id: str, file_path: str, message_log_id: int | None):
-    """背景任務：OCR（含分類）→ 存 OcrPendingConfirm，用戶點「查看辨識結果」按鈕取得結果。"""
+    """背景任務：OCR（含分類）→ 自動歸檔。大頭照例外：push 詢問亡者姓名。"""
     from app.ocr_client import (
         extract,
         NON_DOCUMENT_RESULT, LIFE_PHOTO_RESULT, ID_PHOTO_RESULT,
@@ -609,18 +416,25 @@ def run_ocr_and_notify(user_id: str, file_path: str, message_log_id: int | None)
         def _get_user():
             return db.query(LineUser).filter_by(line_user_id=user_id).first()
 
-        def _save_pending(doc_type: str, ocr_result: str = "", detected_name=None):
-            db.add(OcrPendingConfirm(
+        def _archive_to_manual(reason: str):
+            user = _get_user()
+            db.add(PendingQuestion(
                 line_user_id=user_id,
-                message_log_id=message_log_id,
-                file_path=file_path,
-                ocr_result=ocr_result,
-                doc_type=doc_type,
-                detected_name=detected_name,
-                status="waiting",
-                expires_at=datetime.utcnow() + timedelta(minutes=30),
+                display_name=user.display_name if user else None,
+                question=reason,
+            ))
+            archived_path = _archive_file(file_path, "", doc_type="待人工確認", name=None)
+            db.add(ArchivedDocument(
+                line_user_id=user_id,
+                display_name=user.display_name if user else None,
+                original_file_path=file_path,
+                archived_file_path=archived_path,
+                ocr_result="",
+                document_type="待人工確認",
+                confirmed_at=datetime.utcnow(),
             ))
             db.commit()
+            logger.info("自動歸檔→待人工確認（user=%s reason=%s）", user_id, reason)
 
         # ── 單次 OCR 呼叫，3 分鐘整體 timeout ────────────────────────
         from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -632,83 +446,68 @@ def run_ocr_and_notify(user_id: str, file_path: str, message_log_id: int | None)
                 ocr_result, doc_type, fields = future.result(timeout=OCR_TIMEOUT)
             except FuturesTimeoutError:
                 logger.warning("OCR 超過 %ds 未完成（user=%s）", OCR_TIMEOUT, user_id)
-                _save_pending("辨識失敗")
+                _archive_to_manual("[辨識失敗] OCR 超時")
                 return
 
         logger.info("OCR 結果（user=%s）：doc_type=%s ocr前50=%s", user_id, doc_type, ocr_result[:50])
 
-        # ── 生活照：記錄待辦，無需用戶確認 ──────────────────────────
+        # ── 生活照：存入待人工確認 ────────────────────────────────────
         if ocr_result == LIFE_PHOTO_RESULT or ocr_result.startswith("【生活照】"):
-            user = _get_user()
-            db.add(PendingQuestion(
-                line_user_id=user_id,
-                display_name=user.display_name if user else None,
-                question="[生活照] 用戶上傳了一張生活照片",
-            ))
-            db.commit()
+            _archive_to_manual("[生活照] 用戶上傳了一張生活照片")
             return
 
-        # ── 大頭照：push 詢問姓名，48 小時內等用戶回覆 ──────────────
+        # ── 大頭照：以原始檔名為亡者姓名，直接歸檔 ─────────────────
         if ocr_result == ID_PHOTO_RESULT or ocr_result.startswith("【大頭照】"):
+            name = Path(file_path).stem
+            archived_path = _archive_file(file_path, "", doc_type="大頭照", name=name)
             user = _get_user()
-            db.add(PendingQuestion(
+            db.add(ArchivedDocument(
                 line_user_id=user_id,
                 display_name=user.display_name if user else None,
-                question="[大頭照] 用戶上傳了一張大頭照",
-            ))
-            db.add(OcrPendingConfirm(
-                line_user_id=user_id,
-                message_log_id=message_log_id,
-                file_path=file_path,
+                original_file_path=file_path,
+                archived_file_path=archived_path,
                 ocr_result="",
-                doc_type="大頭照",
-                detected_name="__ASK_NAME__",
-                status="waiting",
-                expires_at=datetime.utcnow() + timedelta(hours=48),
+                document_type="大頭照",
+                confirmed_at=datetime.utcnow(),
             ))
             db.commit()
-            try:
-                get_messaging_api().push_message(PushMessageRequest(
-                    to=user_id,
-                    messages=[TextMessage(
-                        text="🙂 已收到您的大頭照！\n\n請問亡者姓名為何？（直接回覆姓名即可完成歸檔）",
-                    )],
-                ))
-            except Exception as e:
-                logger.warning("大頭照姓名詢問推播失敗（user=%s）：%s", user_id, e)
+            logger.info("自動歸檔完成（user=%s doc_type=大頭照 name=%s）", user_id, name)
             return
 
-        def _save_non_doc(question_tag: str):
-            user = db.query(LineUser).filter_by(line_user_id=user_id).first()
-            db.add(PendingQuestion(
-                line_user_id=user_id,
-                display_name=user.display_name if user else None,
-                question=question_tag,
-            ))
-            _save_pending("非文件照片")
-
+        # ── 無法辨識：存入待人工確認 ─────────────────────────────────
         if ocr_result == NON_DOCUMENT_RESULT or ocr_result.startswith("【非文件圖片】"):
-            _save_non_doc("[非文件照片] 模型判斷圖片非正式文件")
+            _archive_to_manual("[非文件照片] 模型判斷圖片非正式文件")
             return
 
         if ocr_result.startswith("【未找到文字】"):
-            _save_non_doc("[非文件照片] 用戶上傳了一張未含文字的照片")
+            _archive_to_manual("[非文件照片] 未含文字的照片")
             return
 
         if doc_type in ("未分類", "其他") and not any(fields.values()):
-            _save_non_doc("[非文件照片] 用戶上傳無法辨識的圖片")
+            _archive_to_manual("[非文件照片] 無法辨識的圖片")
             return
 
-        # ── 正常文件：存待確認記錄 ───────────────────────────────────
+        # ── 正常文件：直接自動歸檔 ───────────────────────────────────
         detected_name = (fields.get("亡者姓名") or fields.get("申請人姓名")) if fields else None
-        _save_pending(doc_type, ocr_result, detected_name)
-        logger.info("OCR 完成，待用戶確認（user=%s doc_type=%s）", user_id, doc_type)
+        archived_path = _archive_file(file_path, ocr_result, doc_type=doc_type, name=detected_name)
+        user = _get_user()
+        db.add(ArchivedDocument(
+            line_user_id=user_id,
+            display_name=user.display_name if user else None,
+            original_file_path=file_path,
+            archived_file_path=archived_path,
+            ocr_result=ocr_result,
+            document_type=doc_type,
+            confirmed_at=datetime.utcnow(),
+        ))
+        db.commit()
+        logger.info("自動歸檔完成（user=%s doc_type=%s name=%s）", user_id, doc_type, detected_name)
 
     except Exception as e:
         logger.error("OCR 背景任務失敗（user=%s）：%s", user_id, e)
         try:
             db.rollback()
-            _save_pending("辨識失敗")
+            _archive_to_manual("[辨識失敗] 背景任務例外")
         except Exception:
             pass
     finally:

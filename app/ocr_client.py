@@ -98,16 +98,10 @@ _DOC_VALIDATION_RULES = {
         (["起掘許可證", "起掘許可", "起掘"], 1),
         (["公墓", "撿骨", "墳墓", "骨骸", "起掘地點"], 1),
     ],
-    "國民身分證": [
-        # 條件一：正面標題、背面役別、或正面特有欄位（任一即可）
-        (["中華民國國民身分證", "國民身分證", "身分證", "役別",
-          "出生年月日", "發證日期", "換發"], 1),
-        # 條件二：正面或背面任一欄位標籤
-        (["統一編號", "役別", "配偶", "出生地", "住址",
-          "出生年月日", "出生日期", "發證日期", "發證",
-          "性別", "姓名", "換發", "戶籍地址", "父", "母"], 1),
-    ],
 }
+
+_ID_FRONT_KEYWORDS = ["中華民國國民身份證", "中華民國國民身分證", "發證日期", "換證日期"]
+_ID_BACK_KEYWORDS  = ["父", "母", "配偶", "役別", "出生地", "住址"]
 
 def _validate_doc_type(doc_type: str, ocr_text: str) -> bool:
     """
@@ -115,12 +109,25 @@ def _validate_doc_type(doc_type: str, ocr_text: str) -> bool:
     重要：先移除模型自己產生的【標籤】行，只對實際文件內容做驗證，
     避免模型寫了「【文件類型】死亡證明書」後自我驗證通過的問題。
     """
-    if doc_type not in _DOC_VALIDATION_RULES:
+    if doc_type not in _DOC_VALIDATION_RULES and doc_type != "國民身分證":
         return True  # 「其他」或「未分類」不需驗證
 
     # 移除所有 【標籤】內容行（如「【文件類型】死亡證明書」）
     clean_text = re.sub(r'【[^】]+】[^\n]*', '', ocr_text)
+    # 若去標籤後剩餘文字過短（模型只輸出標籤未附文件內容），退而驗證完整輸出
+    if len(clean_text.strip()) < 20:
+        clean_text = ocr_text
     logger.debug("驗證用文字（去除標籤後）前80字：%s", clean_text[:80])
+
+    # 國民身分證：正面（任1）OR 背面（6中取4）
+    if doc_type == "國民身分證":
+        front_ok = any(kw in clean_text for kw in _ID_FRONT_KEYWORDS)
+        back_ok  = sum(1 for kw in _ID_BACK_KEYWORDS if kw in clean_text) >= 4
+        if not (front_ok or back_ok):
+            logger.warning("驗證失敗：國民身分證 正面(%s)=False 背面(4/6)=%d/6",
+                           front_ok, sum(1 for kw in _ID_BACK_KEYWORDS if kw in clean_text))
+            return False
+        return True
 
     for required_keywords, min_matches in _DOC_VALIDATION_RULES[doc_type]:
         matched = sum(1 for kw in required_keywords if kw in clean_text)
@@ -164,10 +171,12 @@ def _find_name_near(text: str, anchors: list) -> str | None:
         idx = text.find(anchor)
         if idx == -1:
             continue
-        # 取錨點後的文字，跳過冒號/空白
-        snippet = text[idx + len(anchor): idx + len(anchor) + 20]
-        snippet = re.sub(r'^[：:：\s　]+', '', snippet)
-        m = _NAME_RE.search(snippet)
+        snippet = text[idx + len(anchor): idx + len(anchor) + 30]
+        # 去掉冒號、空白、換行等前導符號
+        snippet = re.sub(r'^[：:：\s　\n\r]+', '', snippet)
+        # 只在第一行內搜尋，防止跨行匹配到下一個欄位標籤
+        first_line = snippet.split('\n')[0].strip()
+        m = _NAME_RE.search(first_line) if first_line else None
         if m:
             name = m.group().lstrip('故').rstrip('君')
             return name if name else None
@@ -222,8 +231,8 @@ def _extract_fields_regex(text: str, doc_type: str) -> dict:
     id_m = _ID_RE.search(text)
 
     deceased_anchors = {
-        "死亡證明書": ["死者姓名", "姓名"],
-        "火化許可證": ["死者姓名", "姓名", "茲准予"],
+        "死亡證明書": ["死亡者姓名", "死者姓名", "姓名"],
+        "火化許可證": ["死亡者姓名", "死者姓名", "姓名", "茲准予"],
         "遷出證明書": ["亡者姓名", "先人姓名", "死者"],
         "起掘許可證": ["亡者姓名", "墓主姓名"],
         "國民身分證": ["姓名"],
@@ -515,6 +524,11 @@ def extract_from_pdf(file_path: str) -> tuple[str, str, dict]:
         if not doc_type:
             doc_type = _detect_doc_type(embedded_text)
             fields = _extract_fields_regex(embedded_text, doc_type)
+        # 驗證 LLM 分類結果，防止誤判（如發票被分類為國民身分證）
+        if doc_type and not _validate_doc_type(doc_type, embedded_text):
+            logger.warning("PDF LLM 驗證失敗：%s，改用關鍵字重新偵測", doc_type)
+            doc_type = _detect_doc_type(embedded_text)
+            fields = _extract_fields_regex(embedded_text, doc_type) if doc_type != "未分類" else {}
         return embedded_text, doc_type, fields
 
     # 否則轉圖片走 OCR（涵蓋：無嵌入文字、表單亂序、掃描 PDF）

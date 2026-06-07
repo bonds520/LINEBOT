@@ -1,7 +1,7 @@
 # 開發規劃文件：OCR 歸檔工作流 + 架構升級
 
 > 建立日期：2026-05-24  
-> 最後更新：2026-06-06  
+> 最後更新：2026-06-07  
 > 分支：feature/dify-integration  
 
 ---
@@ -32,7 +32,7 @@ ASUS Ascent GX10（ARM64，128GB RAM）        NAS（192.168.31.35，SMB 掛載�
 ├── Dify + 知識庫 ✅                    ├── /scan/LINEBOT/亡者大頭照/{YYYY}/{MM}/
 ├── Ollama qwen2.5vl:7b ✅              ├── /scan/LINEBOT/待人工確認/{YYYY}/{MM}/
 ├── Weaviate + bge-m3 ✅                └── ...
-└── /mnt/nas_linebot（ARCHIVE_PATH）────►（手動掛載，fstab 尚未設定）
+└── /mnt/nas_linebot（ARCHIVE_PATH）────►（fstab 已設定，/etc/.nas-credentials 已建立）
 
 VMware VM（192.168.31.89）
 └── 觀察中，建議 2026-06-14 退役
@@ -74,15 +74,11 @@ Webhook handler（/webhook）
         ├─ PDF：先檢測嵌入文字品質（短行比例 > 40% 改走圖片 OCR）
         ├─ 語意解析：_parse_structured（Ollama 輸出）或 _extract_fields_regex（EasyOCR）
         │
-        ├─ [生活照] 寫入 PendingQuestion，不通知用戶
-        ├─ [大頭照] 寫入 OcrPendingConfirm（48 小時有效），push 詢問亡者姓名
-        │           用戶直接回覆 2~5 個中文字 → 立即歸檔，回覆「✅ 大頭照已歸檔」
-        ├─ [非文件/無法辨識] 寫入 OcrPendingConfirm（doc_type=非文件照片/辨識失敗）
-        │           用戶點「查看辨識結果」→ 詢問「重新拍照 or 仍要歸檔」
-        │           → 仍要歸檔：存入「待人工確認」資料夾
-        └─ [正常文件] 寫入 OcrPendingConfirm（status=waiting，30 分鐘有效）
-                    用戶點「查看辨識結果」→ 顯示辨識結果＋確認/拒絕按鈕
-                    → 確認：歸檔至對應資料夾，寫入 archived_documents
+        ├─ [生活照] 自動存入「待人工確認」
+        ├─ [大頭照] 直接以原始檔名（Path.stem）歸檔至「亡者大頭照」
+        │           ⚠ 使用者須以亡者姓名命名檔案後上傳；圖片訊息無法保留原始檔名
+        ├─ [非文件/無法辨識/OCR 失敗] 自動存入「待人工確認」
+        └─ [正常文件] 驗證 doc_type → 自動歸檔至對應資料夾，寫入 archived_documents
 
 用戶上傳非 OCR 格式（docx、csv、xlsx…）
         └─ 直接歸檔至「其他檔案區/{YYYY}/{MM}/」（日期前綴重新命名）
@@ -248,33 +244,33 @@ EasyOCR 正常執行但無文字（如風景照）→ 回覆「未找到文字�
 | **已完成** | 移除所有 OCR 推播通知（生活照/非文件/完成/逾時），改被動 reply_message | ✅ |
 | **已完成** | 大頭照流程：push 詢問姓名 → 用戶直接回覆 2~5 中文字 → 立即歸檔（去除二次確認） | ✅ |
 | **已完成** | 大頭照 OcrPendingConfirm 有效期延長至 48 小時（避免 OCR 排隊時記錄提前過期） | ✅ |
-| **下一步** | NAS fstab 永久掛載（目前手動掛載，重開機會掉）| ⏳ 待辦 |
+| **已完成** | 全自動歸檔流程：所有 OCR 結果不再要求用戶確認，直接歸檔或存入待人工確認 | ✅ |
+| **已完成** | EasyOCR 姓名誤匹配修正（_find_name_near 僅取錨點後第一行，防止跨行抓到標題詞） | ✅ |
+| **已完成** | PDF LLM 路徑加入 _validate_doc_type 驗證（防止發票被誤判為國民身分證） | ✅ |
+| **已完成** | _validate_doc_type fallback：去標籤後文字 < 20 字，改對完整輸出驗證（解決格式 B 標籤驗證失敗） | ✅ |
+| **已完成** | 國民身分證驗證獨立邏輯：正面任 1（身份證/身分證/發證日期/換證日期）OR 背面 6 取 4（父母配偶役別出生地住址） | ✅ |
+| **已完成** | 大頭照改為直接以原始檔名歸檔（廢除 push 詢問姓名流程，不再消耗推播配額） | ✅ |
+| **已完成** | NAS fstab 自動掛載設定（/etc/.nas-credentials + fstab _netdev,nofail,x-systemd.automount） | ✅ |
 | **下一步** | 後台「已歸檔文件」管理頁面（含待人工確認篩選）| ⏳ 待辦 |
-| **下一步** | LINE push 配額問題（免費 200 則/月，大頭照詢問仍使用 push）| ⏳ 待辦 |
+| **下一步** | 大頭照命名：使用者需自行以亡者姓名命名檔案後上傳，或後台提供重新命名介面 | ⏳ 待辦 |
 | **下一步** | VM 退役（建議觀察至 2026-06-14）| ⏳ 待辦 |
 
 ---
 
 ## 十、下一步詳細說明
 
-### 10-1. NAS fstab 永久掛載 ⏳
+### 10-1. NAS fstab 永久掛載 ✅
 
-目前 SMB 為手動掛載，GX10 重開機後會消失。
+憑證檔：`/etc/.nas-credentials`（chmod 600），fstab 已加入以下條目：
 
-```bash
-# 建立認證檔
-sudo bash -c 'echo "username=life
-password=<NAS密碼>" > /etc/samba/nas_linebot.creds'
-sudo chmod 600 /etc/samba/nas_linebot.creds
-
-# 加入 fstab
-echo "//192.168.31.35/scan/LINEBOT /mnt/nas_linebot cifs \
-credentials=/etc/samba/nas_linebot.creds,uid=1000,gid=1000,\
-file_mode=0755,dir_mode=0755,iocharset=utf8,vers=3.0,_netdev 0 0" \
-  | sudo tee -a /etc/fstab
-
-sudo mount -a   # 驗證
 ```
+//192.168.31.35/scan/LINEBOT  /mnt/nas_linebot  cifs
+  credentials=/etc/.nas-credentials,uid=1000,gid=1000,
+  file_mode=0755,dir_mode=0755,iocharset=utf8,vers=3.0,
+  soft,_netdev,nofail,x-systemd.automount  0  0
+```
+
+**注意**：重開機後若 NAS 未在線，服務仍可正常啟動（nofail），歸檔路徑會暫時寫入本機，NAS 掛載後本機舊檔案會被掛載點覆蓋（隱藏），需手動取回。
 
 ### 10-2. 後台「已歸檔文件」管理頁面 ⏳
 
@@ -283,13 +279,13 @@ sudo mount -a   # 驗證
 - 可篩選「待人工確認」，點擊下載/預覽
 - 確認後可手動修改 document_type 並移至正確資料夾
 
-### 10-3. LINE push 配額問題 ⏳
+### 10-3. 大頭照命名問題 ⏳
 
-目前免費方案每月 200 則推播，已大幅削減 push 用量（移除生活照/非文件/OCR完成/逾時等 6 種 push）。
-現存唯一 push：大頭照辨識完成後詢問亡者姓名（1 則/張）。
-選項：
-- 升級 LINE Business 方案（月費方案，300 則起）
-- 若配額仍不足，可改為用戶主動點「查看辨識結果」後再提示輸入姓名
+目前大頭照以 `Path(file_path).stem` 作為亡者姓名：
+- **文件訊息上傳**（LINE `+` → 文件）：保留原始檔名，使用者須事先以亡者姓名命名
+- **圖片訊息上傳**（拍照/相簿）：無原始檔名，歸檔後得到 UUID-大頭照.jpg
+
+後續可評估：後台提供已歸檔文件重新命名介面，人工修正 UUID 檔名。
 
 ### 10-4. VM 退役 ⏳
 
@@ -297,4 +293,4 @@ sudo mount -a   # 驗證
 
 ---
 
-*文件最後更新：2026-06-06（非 OCR 格式歸檔 + 移除 OCR push + 大頭照流程優化）*
+*文件最後更新：2026-06-07（全自動歸檔 + 身分證驗證重構 + 大頭照改原始檔名歸檔 + NAS fstab 設定）*
